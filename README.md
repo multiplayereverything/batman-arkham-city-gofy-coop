@@ -1,5 +1,5 @@
 # BatCoop: online co-op for Batman: Arkham City
-by nickbin
+by NickBin (RealAnxiousGit)
 
 Roam Arkham City together. Every player runs their own game and sees the other players move through the
 city in real time. Friends join over Steam without opening ports, or over a direct IP address on a LAN or VPN.
