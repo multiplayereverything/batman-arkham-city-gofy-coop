@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <PlatformTarget>x64</PlatformTarget>
+    <RuntimeIdentifier>win-x64</RuntimeIdentifier>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <LangVersion>14</LangVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <InvariantGlobalization>true</InvariantGlobalization>
+    <RootNamespace>BatCoop.Link</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- The wire format is shared with the mod: compile the same source files. -->
+    <Compile Include="..\..\mod\BatCoop\scripts\Core\Wire.cs" Link="Shared\Wire.cs" />
+    <Compile Include="..\..\mod\BatCoop\scripts\Core\LinkProto.cs" Link="Shared\LinkProto.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <Reference Include="Steamworks.NET">
+      <HintPath>..\third_party\steamworks.net-2025.164.1\Steamworks.NET.dll</HintPath>
+    </Reference>
+    <None Include="..\third_party\steamworks.net-2025.164.1\steam_api64.dll" CopyToOutputDirectory="PreserveNewest" Link="steam_api64.dll" />
+  </ItemGroup>
+</Project>

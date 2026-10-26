@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!-- Compiles the mod's scripts the way BmSDK does at game start (C# 14, x86, BmSDK's global usings,
+       references BmSDK/MoreLinq/Tomlyn from the game's sdk folder). Pass -p:GameDir=... to point elsewhere. -->
+  <PropertyGroup>
+    <GameDir Condition="'$(GameDir)' == ''">F:\SteamLibrary\steamapps\common\Batman Arkham City GOTY</GameDir>
+    <TargetFramework>net10.0-windows7.0</TargetFramework>
+    <OutputType>Library</OutputType>
+    <PlatformTarget>x86</PlatformTarget>
+    <LangVersion>14</LangVersion>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <DefineConstants>$(DefineConstants);BATMAN2</DefineConstants>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <NoWarn>CS8933</NoWarn>
+  </PropertyGroup>
+  <ItemGroup>
+    <Compile Include="GlobalUsings.cs" />
+    <Compile Include="..\..\mod\BatCoop\scripts\**\*.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <Reference Include="BmSDK"><HintPath>$(GameDir)\Binaries\Win32\sdk\BmSDK.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="MoreLinq"><HintPath>$(GameDir)\Binaries\Win32\sdk\MoreLinq.dll</HintPath><Private>false</Private></Reference>
+    <Reference Include="Tomlyn"><HintPath>$(GameDir)\Binaries\Win32\sdk\Tomlyn.dll</HintPath><Private>false</Private></Reference>
+  </ItemGroup>
+</Project>

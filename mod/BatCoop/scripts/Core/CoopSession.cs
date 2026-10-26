@@ -1,0 +1,224 @@
+#nullable enable
+// Game-agnostic co-op session: talks to the link, sends the local player's state, keeps one
+// interpolation buffer per remote player. The game layer and the lab's fake world both drive it.
+using System;
+using System.Collections.Generic;
+
+namespace BatCoop.Core;
+
+public interface ICoopWorld
+{
+    /// <summary>Seconds on a steady clock.</summary>
+    double Now { get; }
+    /// <summary>The local player's current state (Seq and Time are filled in by the session). False when there is no pawn.</summary>
+    bool TryReadLocal(out PlayerState state);
+    PlayerInfo LocalInfo { get; }
+}
+
+public sealed class RemotePlayer(byte id, string name)
+{
+    public byte Id { get; } = id;
+    public string Name { get; set; } = name;
+    public PlayerInfo? Info { get; set; }
+    public SnapshotBuffer Buffer { get; } = new();
+    public double LastRecv { get; set; }
+    public long StatesReceived { get; set; }
+    public double RttMs { get; set; } = -1;
+}
+
+public sealed class CoopSession : IDisposable
+{
+    readonly Action<string> _log;
+    readonly Dictionary<byte, RemotePlayer> _remotes = [];
+    LinkClient? _link;
+    uint _seq;
+    double _nextState, _nextPing, _nextWorld;
+    PlayerInfo? _sentInfo;
+
+    public CoopSession(Action<string> log) => _log = log;
+
+    public double SendHz { get; set; } = 20;
+    public LinkState State { get; private set; } = LinkState.Idle;
+    public byte LocalId { get; private set; } = PeerIds.None;
+    public string StatusText { get; private set; } = "Not connected";
+    public string Lobby { get; private set; } = "";
+    public bool LinkUp => _link is { Connected: true };
+    public bool InRoom => State is LinkState.Hosting or LinkState.Joined;
+    public bool IsHost => State == LinkState.Hosting;
+    public WorldInfo? HostWorld { get; private set; }
+    public string LocalWorld { get; set; } = "";
+    public IReadOnlyDictionary<byte, RemotePlayer> Remotes => _remotes;
+    public List<string> Notices { get; } = [];
+    public long StatesSent { get; private set; }
+
+    /// <summary>Raised on the thread that calls Update, for every chat line from a peer.</summary>
+    public event Action<RemotePlayer, string>? Chat;
+
+    public void Attach(LinkClient link, string playerName)
+    {
+        _link?.Dispose();
+        _link = link;
+        link.Send(Frames.Hello(playerName));
+    }
+
+    public bool Host(TransportKind t, int maxPlayers, int directPort, bool friendsOnly = true) =>
+        _link?.Send(Frames.Host(t, maxPlayers, directPort, friendsOnly)) ?? false;
+
+    public bool Join(TransportKind t, string target) => _link?.Send(Frames.Join(t, target)) ?? false;
+
+    public void Leave()
+    {
+        _link?.Send(Frames.Leave());
+        _remotes.Clear();
+    }
+
+    public void Invite() => _link?.Send(Frames.Invite());
+
+    public void SendChat(string text) => SendGame(PeerIds.Everyone, true, GameMessages.Chat(text));
+
+    void SendGame(byte to, bool reliable, byte[] payload)
+    {
+        if (InRoom) _link?.Send(Frames.Send(to, reliable, payload));
+    }
+
+    void Notice(string text)
+    {
+        _log(text);
+        Notices.Add(text);
+        if (Notices.Count > 8) Notices.RemoveAt(0);
+    }
+
+    public void Update(ICoopWorld world)
+    {
+        double now = world.Now;
+        Drain(now);
+        if (!InRoom) return;
+
+        if (now >= _nextState)
+        {
+            // Keep the cadence when frames are uneven; after a long stall, start over instead of bursting.
+            double period = 1.0 / SendHz;
+            _nextState = Math.Max(_nextState + period, now - period);
+            if (world.TryReadLocal(out var st))
+            {
+                st.Seq = ++_seq;
+                st.Time = now;
+                SendGame(PeerIds.Everyone, false, st.Encode());
+                StatesSent++;
+            }
+        }
+
+        var info = world.LocalInfo;
+        if (info != _sentInfo)
+        {
+            _sentInfo = info;
+            SendGame(PeerIds.Everyone, true, info.Encode());
+        }
+
+        if (IsHost && now >= _nextWorld)
+        {
+            _nextWorld = now + 5;
+            SendGame(PeerIds.Everyone, true, new WorldInfo(LocalWorld, info.Name).Encode());
+        }
+
+        if (now >= _nextPing)
+        {
+            _nextPing = now + 2;
+            SendGame(PeerIds.Everyone, true, GameMessages.Ping(now));
+        }
+    }
+
+    void Drain(double now)
+    {
+        if (_link == null) return;
+        while (_link.Events.TryDequeue(out var ev))
+        {
+            switch (ev)
+            {
+                case StatusEvent s:
+                    var wasInRoom = InRoom;
+                    State = s.State;
+                    LocalId = s.LocalId;
+                    StatusText = s.Text;
+                    Lobby = s.Lobby;
+                    if (!InRoom) { _remotes.Clear(); HostWorld = null; }
+                    if (InRoom && !wasInRoom) { _sentInfo = null; _nextWorld = 0; }
+                    _log($"status {s.State} id={s.LocalId} '{s.Text}' lobby={s.Lobby}");
+                    break;
+                case PeerJoinedEvent j:
+                    if (j.Id == LocalId) break;
+                    _remotes[j.Id] = new RemotePlayer(j.Id, j.Name) { LastRecv = now };
+                    _sentInfo = null; // the newcomer needs our info
+                    if (IsHost) _nextWorld = 0;
+                    Notice($"{j.Name} joined");
+                    break;
+                case PeerLeftEvent l:
+                    if (_remotes.Remove(l.Id, out var gone)) Notice($"{gone.Name} left ({l.Reason})");
+                    break;
+                case RecvEvent r:
+                    OnGame(r.From, r.Payload, now);
+                    break;
+                case NoticeEvent n:
+                    Notice(n.Text);
+                    break;
+                case LinkLostEvent lost:
+                    State = LinkState.Idle;
+                    StatusText = "Link stopped: " + lost.Reason;
+                    _remotes.Clear();
+                    HostWorld = null;
+                    _link = null;
+                    _log(StatusText);
+                    return;
+            }
+        }
+    }
+
+    void OnGame(byte from, byte[] payload, double now)
+    {
+        if (from == LocalId || payload.Length == 0) return;
+        if (!_remotes.TryGetValue(from, out var rp))
+        {
+            // Data can overtake the join notice; create the player and fill the name in later.
+            rp = new RemotePlayer(from, $"Player {from}");
+            _remotes[from] = rp;
+        }
+        rp.LastRecv = now;
+        try
+        {
+            var r = new WireReader(payload);
+            switch ((GameMsg)r.U8())
+            {
+                case GameMsg.PlayerState:
+                    var st = PlayerState.Decode(ref r);
+                    if (rp.Buffer.Add(st, now)) rp.StatesReceived++;
+                    break;
+                case GameMsg.PlayerInfo:
+                    rp.Info = PlayerInfo.Decode(ref r);
+                    if (rp.Info.Name.Length > 0) rp.Name = rp.Info.Name;
+                    break;
+                case GameMsg.Chat:
+                    Chat?.Invoke(rp, r.Str());
+                    break;
+                case GameMsg.Ping:
+                    SendGame(from, true, GameMessages.Pong(r.F32()));
+                    break;
+                case GameMsg.Pong:
+                    rp.RttMs = (now - r.F32()) * 1000.0;
+                    break;
+                case GameMsg.WorldInfo:
+                    if (from == PeerIds.Host) HostWorld = WorldInfo.Decode(ref r);
+                    break;
+            }
+        }
+        catch (WireException e)
+        {
+            _log($"bad message from {from}: {e.Message}");
+        }
+    }
+
+    public void Dispose()
+    {
+        _link?.Dispose();
+        _link = null;
+    }
+}

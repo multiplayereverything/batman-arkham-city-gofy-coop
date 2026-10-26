@@ -1,0 +1,14 @@
+# local toolchains and third-party checkouts
+tools/dotnet/
+tools/dl/
+tools/apidump/bin/
+tools/apidump/obj/
+tools/apidump/out/
+toolkits/
+local/
+# build output
+bin/
+obj/
+dist/
+lab/out/
+*.user
