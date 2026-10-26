@@ -12,6 +12,10 @@ Status: **early (0.1.0)**. Players see each other; the world is not shared yet. 
 - Steam running and signed in (for Steam play). Nobody needs to buy anything extra: online play runs through
   Valve's free Spacewar app (AppID 480), so Steam shows you as "playing Spacewar" while you are in a co-op game.
 
+# It is HIGHLY recommended you setup dgVoodoo2 to prevent memory crashes, since this is a 32-bit game. (Optional)
+You can do so by downloading the latest release from the following repository, then copying "MS/x86/D3D9.dll" to "Batman Arkham City GOTY\Binaries\Win32"
+https://github.com/dege-diosg/dgVoodoo2/
+
 ## Install
 1. Install BmSDK: run its installer, or unzip `BmSDK-AC-v0.21.0.zip` so that its `Binaries` and `BmGame` folders merge
    with the ones in your game folder.
