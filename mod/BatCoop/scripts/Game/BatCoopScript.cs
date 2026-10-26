@@ -69,7 +69,21 @@ public sealed class BatCoopScript : Script
         var probePath = _cfg.Str("ProbePath", "");
         if (probePath.Length > 0) _probe = new ProbeWriter(probePath, _cfg.Str("ProbeMachine", "game"));
 
+        ApplyRunInBackground();
         Log($"BatCoop {Versions.Mod} ({Versions.Protocol}) loaded; transport {Transport}; F5 host, F6 join, F7 leave");
+    }
+
+    /// <summary>The game pauses its world when its window loses focus (Engine.bPauseOnLossOfFocus), and then no
+    /// script ticks: nothing is sent and nothing moves. RunInBackground=1 keeps it running (in memory only).</summary>
+    void ApplyRunInBackground()
+    {
+        if (!_cfg.Bool("RunInBackground", false)) return;
+        try
+        {
+            var engine = BmSDK.Framework.Game.GetEngine();
+            if (engine.bPauseOnLossOfFocus) { engine.bPauseOnLossOfFocus = false; Log("pause on focus loss: off"); }
+        }
+        catch (Exception e) { Log("RunInBackground failed: " + e.Message); }
     }
 
     public override void OnUnload()
@@ -98,12 +112,14 @@ public sealed class BatCoopScript : Script
 
     public override void OnEnterMenu()
     {
+        ApplyRunInBackground();
         if (_labEnterWorld && _labEnterAt < 0) _labEnterAt = _world.Now + 3;
     }
 
     public override void OnEnterGame()
     {
         Log($"entered world '{SafeMapName()}'");
+        ApplyRunInBackground();
         _puppets?.DestroyAll(); // actors from the previous world are gone with it
     }
 
@@ -122,7 +138,7 @@ public sealed class BatCoopScript : Script
         _pendingAction = action;
         _linkWaitUntil = _world.Now + 15;
         _nextLinkTry = 0;
-        var c = LinkClient.TryConnect(LinkPort, 200);
+        var c = LinkClient.TryConnect(LinkPort);
         if (c != null) { AttachLink(c); return; }
         StartLinkProcess();
     }
@@ -130,7 +146,7 @@ public sealed class BatCoopScript : Script
     void StartLinkProcess()
     {
         var exe = Path.Combine(Mod.DirectoryPath, "link", "BatCoopLink.exe");
-        if (!File.Exists(exe)) { Toast("BatCoopLink.exe is missing from BmGame\\Mods\\BatCoop\\link"); _pendingAction = null; return; }
+        if (!File.Exists(exe)) { Toast("BatCoopLink.exe is missing from BmGame\\Mods\\BatCoop\\link"); Log("BatCoopLink.exe missing"); _pendingAction = null; return; }
         var psi = new ProcessStartInfo(exe)
         {
             UseShellExecute = false,
@@ -172,10 +188,10 @@ public sealed class BatCoopScript : Script
     {
         if (_pendingAction == null || _session == null || _session.LinkUp) return;
         double now = _world.Now;
-        if (now > _linkWaitUntil) { Toast("BatCoopLink did not start (see BmGame\\Mods\\BatCoop\\logs\\link.log)"); _pendingAction = null; return; }
+        if (now > _linkWaitUntil) { Toast("BatCoopLink did not start (see BmGame\\Mods\\BatCoop\\logs\\link.log)"); Log("link did not answer in 15 s"); _pendingAction = null; return; }
         if (now < _nextLinkTry) return;
         _nextLinkTry = now + 0.5;
-        var c = LinkClient.TryConnect(LinkPort, 100);
+        var c = LinkClient.TryConnect(LinkPort);
         if (c != null) AttachLink(c);
     }
 
@@ -310,13 +326,13 @@ public sealed class BatCoopScript : Script
         _nextProbe = now + 1.0 / 30;
         var actors = new List<ProbeActor>();
         if (_world.TryReadLocal(out var me))
-            actors.Add(new ProbeActor($"P{_session.LocalId}", me.Pos, me.Pitch, me.Yaw, true, (me.Flags & PlayerFlags.Dead) != 0, true));
+            actors.Add(new ProbeActor($"0x{0x100 + _session.LocalId:X}", me.Pos, me.Pitch, me.Yaw, true, (me.Flags & PlayerFlags.Dead) != 0, true));
         foreach (var p in _puppets.All.Values)
         {
             if (!p.HasSample || !p.Pawn.IsValid) continue;
             var loc = p.Pawn.Location;
             var rot = p.Pawn.Rotation;
-            actors.Add(new ProbeActor($"PUP{p.Id}", loc, 0, SnapshotBuffer.Normalize(rot.Yaw), true, false, !p.Pawn.bHidden));
+            actors.Add(new ProbeActor($"0x{0x200 + p.Id:X}", loc, 0, SnapshotBuffer.Normalize(rot.Yaw), true, false, !p.Pawn.bHidden));
         }
         _probe.Write(now, actors);
     }
@@ -362,11 +378,33 @@ public sealed class BatCoopScript : Script
             Text($"  {rp.Name}  {rp.Info?.Character}  {where}  {ping}", 150, 210, 255);
         }
 
+        DrawNameTags(hud, c);
+
         double now = _world.Now;
         _toasts.RemoveAll(t => t.until < now);
         foreach (var t in _toasts) Text(t.text, 255, 255, 255);
         foreach (var n in _session.Notices) Toast(n);
         _session.Notices.Clear();
+    }
+
+    /// <summary>Each remote player's name above their puppet, only when it is in front of the camera.</summary>
+    void DrawNameTags(HUD hud, Canvas c)
+    {
+        if (_puppets == null || _session == null || hud.PlayerOwner == null) return;
+        hud.PlayerOwner.GetPlayerViewPoint(out var camLoc, out var camRot);
+        var fwd = camRot.ToDirection();
+        foreach (var p in _puppets.All.Values)
+        {
+            if (!p.Pawn.IsValid || p.Pawn.bHidden) continue;
+            var head = p.Pawn.Location + new Vector3(0, 0, 120);
+            if (Vector3.Dot(head - camLoc, fwd) <= 0) continue;
+            var sp = c.Project(head);
+            var name = _session.Remotes.TryGetValue(p.Id, out var rp) ? rp.Name : $"Player {p.Id + 1}";
+            c.TextSize(name, out var xl, out var yl);
+            c.SetPos(sp.X - xl / 2, sp.Y - yl, 0);
+            c.SetDrawColor(150, 210, 255, 255);
+            c.DrawText(name, false, 1, 1, out _);
+        }
     }
 
     // ---------- lab bridge ----------

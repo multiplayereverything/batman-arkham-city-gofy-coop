@@ -1,0 +1,17 @@
+BmGame/Mods/BatCoop/README.md
+BmGame/Mods/BatCoop/link/BatCoopLink.exe
+BmGame/Mods/BatCoop/link/steam_api64.dll
+BmGame/Mods/BatCoop/mod.toml
+BmGame/Mods/BatCoop/scripts/Core/CoopConfig.cs
+BmGame/Mods/BatCoop/scripts/Core/CoopSession.cs
+BmGame/Mods/BatCoop/scripts/Core/GameMessages.cs
+BmGame/Mods/BatCoop/scripts/Core/LinkClient.cs
+BmGame/Mods/BatCoop/scripts/Core/LinkProto.cs
+BmGame/Mods/BatCoop/scripts/Core/Probe.cs
+BmGame/Mods/BatCoop/scripts/Core/SnapshotBuffer.cs
+BmGame/Mods/BatCoop/scripts/Core/Wire.cs
+BmGame/Mods/BatCoop/scripts/Game/BatCoopScript.cs
+BmGame/Mods/BatCoop/scripts/Game/LabBridge.cs
+BmGame/Mods/BatCoop/scripts/Game/LocalWorld.cs
+BmGame/Mods/BatCoop/scripts/Game/Native.cs
+BmGame/Mods/BatCoop/scripts/Game/Puppets.cs

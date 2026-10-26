@@ -56,7 +56,7 @@ public sealed class Bot : IDisposable
         Name = name;
         World = world;
         LinkPort = linkPort;
-        var psi = new ProcessStartInfo(linkExe)
+        var psi = new ProcessStartInfo(Path.GetFullPath(linkExe))
         {
             UseShellExecute = false,
             CreateNoWindow = true,
@@ -75,7 +75,7 @@ public sealed class Bot : IDisposable
         var until = DateTime.UtcNow.AddSeconds(10);
         while (c == null && DateTime.UtcNow < until)
         {
-            c = LinkClient.TryConnect(linkPort, 200);
+            c = LinkClient.TryConnect(linkPort);
             if (c == null) Thread.Sleep(100);
         }
         if (c == null) throw new Exception($"{name}: link on port {linkPort} did not come up");

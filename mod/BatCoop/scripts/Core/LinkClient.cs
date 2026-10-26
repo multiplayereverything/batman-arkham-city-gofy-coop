@@ -3,6 +3,7 @@
 // the game thread drains them with TryDequeue, so nothing here touches game objects.
 using System;
 using System.Collections.Concurrent;
+using System.Net;
 using System.Net.Sockets;
 using System.Threading;
 
@@ -37,12 +38,14 @@ public sealed class LinkClient : IDisposable
     }
 
     /// <summary>Connects to a link on 127.0.0.1. Returns null when nothing listens there.</summary>
-    public static LinkClient? TryConnect(int port, int timeoutMs = 500)
+    /// <remarks>A plain blocking connect: on loopback it is answered or refused at once. Waiting on ConnectAsync
+    /// from the game thread never finishes under BmSDK, whose synchronization context is that same thread.</remarks>
+    public static LinkClient? TryConnect(int port)
     {
         var tcp = new TcpClient();
         try
         {
-            if (!tcp.ConnectAsync("127.0.0.1", port).Wait(timeoutMs)) { tcp.Dispose(); return null; }
+            tcp.Connect(IPAddress.Loopback, port);
             return new LinkClient(tcp);
         }
         catch

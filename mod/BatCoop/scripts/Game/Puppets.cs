@@ -79,7 +79,8 @@ public sealed class PuppetManager
         Pawn? pawn = null;
         try
         {
-            pawn = SpawnPlayerPawn(ch, s.Pos, rot) ?? SpawnPlayerPawn(CharacterId.Batman, s.Pos, rot);
+            pawn = SpawnPlayerPawn(ch, s.Pos, rot, out var why) ?? SpawnPlayerPawn(CharacterId.Batman, s.Pos, rot, out why);
+            if (pawn == null) { LastError = $"spawn failed: {why}"; _log(LastError); }
         }
         catch (Exception e)
         {
@@ -93,8 +94,9 @@ public sealed class PuppetManager
         return new Puppet { Id = rp.Id, Pawn = pawn, Character = ch };
     }
 
-    static Pawn? SpawnPlayerPawn(CharacterId ch, Vector3 pos, Rotator rot)
+    static Pawn? SpawnPlayerPawn(CharacterId ch, Vector3 pos, Rotator rot, out string why)
     {
+        why = "";
         try
         {
             return ch switch
@@ -105,9 +107,10 @@ public sealed class PuppetManager
                 _ => new RPawnPlayerBm(pos, rot),
             };
         }
-        catch
+        catch (Exception e)
         {
-            // The class or its package is not loaded in this world.
+            // Usually: the class or its package is not loaded in this world.
+            why = $"{ch}: {e.GetType().Name}: {e.Message}";
             return null;
         }
     }
@@ -130,7 +133,9 @@ public sealed class PuppetManager
         pawn.Velocity = s.Vel;
         bool hidden = (s.Latest.Flags & PlayerFlags.Hidden) != 0;
         if (pawn.bHidden != hidden) pawn.SetHidden(hidden);
-        if (MirrorPhysics && (byte)pawn.Physics != s.Latest.Physics) pawn.SetPhysics((Actor.EPhysics)s.Latest.Physics, false);
+        // The player pawn's own code switches itself back to falling; a puppet must not fall between updates.
+        if (MirrorPhysics) { if ((byte)pawn.Physics != s.Latest.Physics) pawn.SetPhysics((Actor.EPhysics)s.Latest.Physics, false); }
+        else if (pawn.Physics != Actor.EPhysics.PHYS_None) pawn.SetPhysics(Actor.EPhysics.PHYS_None, false);
         p.Last = s;
         p.HasSample = true;
     }

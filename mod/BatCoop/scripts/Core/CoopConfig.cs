@@ -65,5 +65,9 @@ public sealed class CoopConfig
 
         # Local port between the game and BatCoopLink.exe. Change only if something else uses it.
         LinkPort=27960
+
+        # 1 = keep the game running when its window is not focused (the game normally pauses, which also
+        # freezes you for the other players).
+        RunInBackground=0
         """;
 }

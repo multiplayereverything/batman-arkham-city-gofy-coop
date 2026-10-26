@@ -41,5 +41,42 @@ Journal. Facts first, then decisions, then what failed and why.
   was refused by the permission classifier (needs ExecutionPolicy Bypass), so the zip was used instead.
 - `tools/apidump`: MetadataLoadContext dump of `BmSDK.dll` (`dotnet tools/apidump/out/apidump.dll <sdk dir> <Type>`).
 
+## Launching the game for the lab (2026-10-26)
+- `BatmanAC.exe -windowed -ResX=1280 -ResY=720` started outside Steam: the Steam wrapper relaunched through Steam,
+  and Steam's default target is `BmLauncher.exe` (a window waiting for "Play"). BmSDK had already compiled the
+  scripts in the short-lived first process, so a compile line in BmSDK.log does not mean the game is running.
+- With Steam's own launch environment (`SteamAppId=200260`, `SteamGameId=200260`) the exe starts directly
+  (Steam still checks ownership). The lab closes a BmLauncher it caused, by PID, if this ever falls back.
+- `Script.Main` runs about 18 s after launch; the lab's `start batentry?...` puts Batman in map `OW` ~20 s later.
+- Child processes inherit `SteamAppId=200260`; the mod removes it when starting BatCoopLink and the link sets 480.
+
+## Steam (one account)
+- `lab/steam_smoke.py`: link starts as AppID 480 in ~0.3 s, `CreateLobby(FriendsOnly)` returns a lobby in ~0.2 s,
+  leave is clean. Two-account play (lobby join + P2P) is not testable on one PC.
+
+## In-game findings (lab runs 1-4, 2026-10-26)
+1. **The world pauses when the window loses focus** (`[Engine.Engine] bPauseOnLossOfFocus=TRUE` in BmEngine.ini) and
+   BmSDK's `OnTick` stops with it: no sends, no puppet updates, the bridge stops answering. The mod can clear
+   `_Engine.bPauseOnLossOfFocus` in memory (`RunInBackground=1`); the lab always does, players choose in BatCoop.ini.
+2. **Never block the game thread on a Task.** `TcpClient.ConnectAsync(..).Wait(ms)` on the game thread never
+   finished. A plain blocking `Connect(IPAddress.Loopback, port)` is immediate on loopback.
+3. **Puppet = `new RPawnPlayerBm(pos, rot)`, unpossessed.** Spawns fine in `OW`, draws as a full Batman with the
+   local player's suit, idle pose. `SetCollision(false,false,true)` + `bCollideWorld=false` keep it out of the way.
+   Its own code sets `PHYS_Falling` again after `SetPhysics(PHYS_None)`, so the mod re-applies PHYS_None every frame.
+4. A remote player whose `PlayerInfo.World` differs from ours is not drawn (by design). The first bot reported
+   `batentry` while the game's map name is `OW`, so nothing spawned; the bot now adopts the host's world.
+5. `exec shot` writes `Documents\WB Games\Batman Arkham City GOTY\BmGame\ScreenShots\ScreenShotNNNNN.bmp`.
+6. `RHUD.PostRender` redirect + `Canvas.DrawText` works for the overlay; `Canvas.Project` works for name tags.
+7. Map name of the open world from `WorldInfo.GetMapName(false)` is `OW` (not `batentry`).
+
 ## Next
 See the end of the file for the running status.
+
+## Status at 0.1.0 (2026-10-26)
+- Compile check: 0 errors. Offline lab: 14/14 + animcheck PASS (p95 8 uu at 90+-35 ms lag).
+- In-game lab run 5: 12/12 PASS. Real game hosts (direct), bot joins, puppet spawns as RPawnPlayerBm with
+  PHYS_None, moves 500 uu wide path, is removed on leave; bot receives 1200 states from the game; animcheck both
+  directions: 2993 samples, p95 position 1.6 uu, facing 0.37 deg, 0 glitches.
+- Steam smoke (one account): Spacewar init + friends-only lobby + leave PASS. Two-account Steam play: untested.
+- Not synced: remote animation (idle pose), enemies, story, collectibles, gadgets. Next: drive the puppet's
+  animation from velocity/physics (RPawnPlayerAnim / AnimTree nodes), then host-authoritative enemy state.

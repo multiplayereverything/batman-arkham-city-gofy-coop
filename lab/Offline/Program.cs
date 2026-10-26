@@ -7,6 +7,8 @@ using System.Numerics;
 using BatCoop.Core;
 using BatCoop.Lab;
 
+if (args.Length > 0 && args[0] == "bot") return BotMain.Run(args[1..]);
+if (args.Length > 0 && args[0] == "steamsmoke") return SteamSmoke.Run(args[1], args.Length > 2 ? args[2] : ".");
 if (args.Length < 2) { Console.Error.WriteLine("usage: Offline <BatCoopLink.exe> <out dir> [--only a,b]"); return 2; }
 var linkExe = Path.GetFullPath(args[0]);
 var outDir = Path.GetFullPath(args[1]);
