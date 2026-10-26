@@ -35,7 +35,22 @@ public sealed class CoopSession : IDisposable
     double _nextState, _nextPing, _nextWorld;
     PlayerInfo? _sentInfo;
 
-    public CoopSession(Action<string> log) => _log = log;
+    public CoopSession(Action<string> log)
+    {
+        _log = log;
+        World = new WorldSync(log, SendGame);
+        NpcHost = new NpcHost(SendGame);
+        NpcGuest = new NpcGuest(SendGame);
+        Vote = new CutsceneVote(SendGame);
+    }
+
+    public WorldSync World { get; }
+    public NpcHost NpcHost { get; }
+    public NpcGuest NpcGuest { get; }
+    public CutsceneVote Vote { get; }
+    /// <summary>Set by the game layer (or the lab); null disables that kind of sync.</summary>
+    public IWorldPort? WorldPort { get; set; }
+    public INpcHostPort? NpcPort { get; set; }
 
     public double SendHz { get; set; } = 20;
     public LinkState State { get; private set; } = LinkState.Idle;
@@ -121,6 +136,20 @@ public sealed class CoopSession : IDisposable
             SendGame(PeerIds.Everyone, true, new WorldInfo(LocalWorld, info.Name).Encode());
         }
 
+        if (WorldPort != null)
+        {
+            if (IsHost) World.HostTick(WorldPort, now);
+            else World.GuestTick(WorldPort, now);
+        }
+        if (IsHost && NpcPort != null)
+        {
+            var players = new List<System.Numerics.Vector3>();
+            if (world.TryReadLocal(out var me)) players.Add(me.Pos);
+            foreach (var rp in _remotes.Values)
+                if (rp.Buffer.HasData && rp.Buffer.Newest.InWorld) players.Add(rp.Buffer.Newest.Pos);
+            NpcHost.Tick(NpcPort, players, now);
+        }
+
         if (now >= _nextPing)
         {
             _nextPing = now + 2;
@@ -142,6 +171,7 @@ public sealed class CoopSession : IDisposable
                     StatusText = s.Text;
                     Lobby = s.Lobby;
                     if (!InRoom) { _remotes.Clear(); HostWorld = null; }
+                    if (InRoom != wasInRoom) ResetRoomState();
                     if (InRoom && !wasInRoom) { _sentInfo = null; _nextWorld = 0; }
                     _log($"status {s.State} id={s.LocalId} '{s.Text}' lobby={s.Lobby}");
                     break;
@@ -149,11 +179,17 @@ public sealed class CoopSession : IDisposable
                     if (j.Id == LocalId) break;
                     _remotes[j.Id] = new RemotePlayer(j.Id, j.Name) { LastRecv = now };
                     _sentInfo = null; // the newcomer needs our info
-                    if (IsHost) _nextWorld = 0;
+                    if (IsHost)
+                    {
+                        _nextWorld = 0;
+                        World.HostSendSnapshot(j.Id);
+                        NpcHost.SendAllInfo(j.Id);
+                    }
                     Notice($"{j.Name} joined");
                     break;
                 case PeerLeftEvent l:
                     if (_remotes.Remove(l.Id, out var gone)) Notice($"{gone.Name} left ({l.Reason})");
+                    if (IsHost) Vote.HostPlayerLeft(l.Id);
                     break;
                 case RecvEvent r:
                     OnGame(r.From, r.Payload, now);
@@ -163,6 +199,7 @@ public sealed class CoopSession : IDisposable
                     break;
                 case LinkLostEvent lost:
                     State = LinkState.Idle;
+                    ResetRoomState();
                     StatusText = "Link stopped: " + lost.Reason;
                     _remotes.Clear();
                     HostWorld = null;
@@ -208,12 +245,33 @@ public sealed class CoopSession : IDisposable
                 case GameMsg.WorldInfo:
                     if (from == PeerIds.Host) HostWorld = WorldInfo.Decode(ref r);
                     break;
+                case GameMsg.World:
+                    if (WorldPort == null) break;
+                    if (IsHost) World.HostReceive(from, ref r, WorldPort);
+                    else if (from == PeerIds.Host) World.GuestReceive(ref r, WorldPort, now);
+                    break;
+                case GameMsg.Npc:
+                    if (IsHost) { if (NpcPort != null) NpcHost.Receive(from, ref r, NpcPort); }
+                    else if (from == PeerIds.Host) NpcGuest.Receive(ref r, now);
+                    break;
+                case GameMsg.Vote:
+                    if (IsHost) Vote.HostReceive(from, ref r);
+                    else if (from == PeerIds.Host) Vote.GuestReceive(ref r);
+                    break;
             }
         }
         catch (WireException e)
         {
             _log($"bad message from {from}: {e.Message}");
         }
+    }
+
+    void ResetRoomState()
+    {
+        World.Reset();
+        NpcGuest.Clear();
+        Vote.Reset();
+        if (IsHost) NpcHost.Reset();
     }
 
     public void Dispose()

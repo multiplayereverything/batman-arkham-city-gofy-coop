@@ -12,6 +12,9 @@ public enum GameMsg : byte
     Ping = 4,        // reliable, f64 sender time
     Pong = 5,        // reliable, f64 echoed time
     WorldInfo = 6,   // reliable, host -> everyone, on change and every few seconds
+    World = 7,       // story and world state (WorldSync)
+    Npc = 8,         // host-owned NPCs (NpcSync)
+    Vote = 9,        // cutscene vote skip (CutsceneVote)
 }
 
 [System.Flags]
