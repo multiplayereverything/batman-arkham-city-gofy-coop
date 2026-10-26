@@ -8,6 +8,7 @@ using BatCoop.Core;
 using BatCoop.Lab;
 
 if (args.Length > 0 && args[0] == "bot") return BotMain.Run(args[1..]);
+if (args.Length > 0 && args[0] == "botserve") return BotServe.Run(args[1..]);
 if (args.Length > 0 && args[0] == "steamsmoke") return SteamSmoke.Run(args[1], args.Length > 2 ? args[2] : ".");
 if (args.Length < 2) { Console.Error.WriteLine("usage: Offline <BatCoopLink.exe> <out dir> [--only a,b]"); return 2; }
 var linkExe = Path.GetFullPath(args[0]);
@@ -313,11 +314,21 @@ Run("world_story_sync", () =>
     bool follow = TickUntil(all, () => gs.All(g => g.Travels >= 1 && g.Values["lvl:map"].Str == "Steel_C1"), 5);
     Check("world_level_follow", follow, $"both guests were sent to the host's map Steel_C1 (travels: {string.Join(",", gs.Select(g => g.Travels))})");
 
-    // Drift the guests' copy behind the mod's back: the digest finds it, the host repairs it.
-    gs[1].Corrupt(WorldEffect.Flag("g:RiddlerTrophy_42", true));
+    // A guest's own script sets a flag natively (no hook sees it): that is the guest's progress, so the host
+    // adopts it and every copy gets it.
+    gs[1].Corrupt(WorldEffect.Flag("g:Riddler_Trophy_42_Found", true));
+    gs[1].Corrupt(WorldEffect.Number("ch:side:3", 4));
+    bool adopted = TickUntil(all, () => hs.Values.TryGetValue("g:Riddler_Trophy_42_Found", out var f) && f.IsSet
+                                         && hs.Values["ch:side:3"].Int == 4 && gs.All(g => Converged(hs, g)), 10);
+    Check("world_guest_native_progress", adopted, $"a flag and a side-mission step a guest's game set by itself reached the host and the other guest");
+
+    // A guest losing state (its game reloaded and dropped flags, a chapter went backwards) is not progress:
+    // the digest finds it and the host repairs it.
+    gs[1].Corrupt(WorldEffect.Flag("g:Ch3_StartMission", false));
     gs[1].Corrupt(WorldEffect.Number("ch:main", 1));
     bool healed = TickUntil(all, () => Converged(hs, gs[1]), 15);
-    Check("world_digest_repair", healed && host.Session.World.Repairs >= 1, $"guest2's drift repaired by the host ({host.Session.World.Repairs} repair(s), {host.Session.World.LastRepair})");
+    Check("world_digest_repair", healed && host.Session.World.Repairs >= 1 && hs.Values["ch:main"].Int == 3,
+        $"guest2's lost state repaired by the host, host unchanged at chapter {hs.Values["ch:main"].Int} ({host.Session.World.Repairs} repair(s))");
 
     foreach (var b in all) b.Dispose();
 });
@@ -356,8 +367,9 @@ Run("world_under_lag", () =>
         foreach (var b in all) b.Tick();
         Thread.Sleep(5);
     }
-    bool ok = TickUntil(all, () => Converged(hs, gs[0]), 10);
-    Check("world_under_lag", ok && guests[0].Session.World.IntentsSent == host.Session.World.IntentsApplied,
+    // Converged and every intent delivered (an intent for a flag that is already set can land after the copies match).
+    bool ok = TickUntil(all, () => Converged(hs, gs[0]) && guests[0].Session.World.IntentsSent == host.Session.World.IntentsApplied, 10);
+    Check("world_under_lag", ok,
         $"200 random changes through 90+-35 ms lag converge (intents sent {guests[0].Session.World.IntentsSent}, applied {host.Session.World.IntentsApplied}, repairs {host.Session.World.Repairs})");
     foreach (var b in all) b.Dispose();
 });
@@ -471,6 +483,25 @@ Run("cutscene_vote", () =>
     VoteFor(host);
     bool alone = TickUntil([host, g2], () => skips[0] == 2 && skips[2] == 2, 3);
     Check("cutscene_vote_leaver", alone, $"after a watcher left, the host's vote alone skipped it (skips {string.Join(",", skips)})");
+
+    // The same player in a new room with a new host: that host's rounds start at 1 again and must still skip.
+    g2.Session.Leave();
+    TickUntil([host, g2], () => g2.Session.State == LinkState.Idle, 5);
+    int dport2 = NextPort();
+    var newHost = MakeBot("NewHost", FakeWorld.Still(default));
+    newHost.Session.Host(TransportKind.Direct, 4, dport2);
+    TickUntil([newHost], () => newHost.Session.State == LinkState.Hosting, 5);
+    g2.Session.Join(TransportKind.Direct, $"127.0.0.1:{dport2}");
+    TickUntil([newHost, g2], () => g2.Session.State == LinkState.Joined, 5);
+    int newSkips = 0;
+    newHost.Session.Vote.SkipNow += () => newSkips++;
+    int g2Before = skips[2];
+    Watch(newHost, true); Watch(g2, true);
+    TickUntil([newHost, g2], () => g2.Session.Vote.Needed == 2, 3);
+    VoteFor(g2); VoteFor(newHost);
+    bool fresh = TickUntil([newHost, g2], () => newSkips == 1 && skips[2] == g2Before + 1, 3);
+    Check("cutscene_vote_new_room", fresh, $"in a new room under a new host the first skip still happens on the guest ({skips[2] - g2Before})");
+    newHost.Dispose();
     host.Dispose(); g2.Dispose();
 });
 

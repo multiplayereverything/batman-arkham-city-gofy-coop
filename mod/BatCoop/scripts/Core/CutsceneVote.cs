@@ -33,7 +33,9 @@ public sealed class CutsceneVote
 
     public void Reset()
     {
+        // A new room has a new host whose skip rounds start again at 1.
         _watching.Clear(); _votes.Clear(); Votes = Needed = 0; LocalVoted = false; _localWatching = false;
+        _round = 1; _lastSkipDone = 0;
     }
 
     // ---- local player (every machine) ----

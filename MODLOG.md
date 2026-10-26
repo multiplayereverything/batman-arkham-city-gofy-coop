@@ -80,3 +80,37 @@ See the end of the file for the running status.
 - Steam smoke (one account): Spacewar init + friends-only lobby + leave PASS. Two-account Steam play: untested.
 - Not synced: remote animation (idle pose), enemies, story, collectibles, gadgets. Next: drive the puppet's
   animation from velocity/physics (RPawnPlayerAnim / AnimTree nodes), then host-authoritative enemy state.
+
+## 0.2.0: world, story, missions, NPCs, no pause, cutscene vote (2026-10-26)
+Design from coop-anything (skill + MCP: playbook effect-capture-story-sync, actor-ownership, how-coop-mods-work,
+fake-world-testing; tools mutants/gameslot/animcheck). The MCP was registered mid-session, so it was driven over
+stdio with the same server; its tools answered (list_docs, get_skill, read_playbook, search_directory, detect_engine).
+
+Findings in the real game (all reproduced at least twice):
+1. **`RFlagManager.FindSetFlagsLike(name, out TArray<FString>)` crashes the game silently** (no dump). Never call
+   functions with out TArray parameters through BmSDK 0.21 (`SetFlagList` has the same shape and was not hooked).
+2. **Story flags are set natively at load** (the start URL's `Flags=`), so no redirect sees them. Flag names come from
+   loaded Kismet objects instead: `RSeqVar_GlobalFlag.FlagName/FlagNameAsString`, `RSeqAct_SwitchFlags.FlagList[].FlagName`,
+   `BmScript.RSeqAct_SetMapFlag.GlobalFlagName`. 238 names in the open world; polling all with `GetGlobalFlag` takes ~1.8 ms.
+3. `RPersistentData.FlagNames` is empty on a fresh temp-slot start (it is the save's list).
+4. Redirects DO fire for calls made from C# (both TakeDamage hooks fired on a lab `TakeDamage`), and for script calls
+   (`SetPause` from the console `pause`).
+5. **No pause:** console `pause` stops the world tick and with it BmSDK's `OnTick`, so a guard in OnTick never runs.
+   Redirect `PlayerController.SetPause` (refuse while in a room) works; the HUD `PostRender` redirect still runs while
+   paused and is the fallback (and serves the lab bridge while paused).
+6. Clearing `WorldInfo.Pauser` by hand leaves the engine's pauser list set; the next `pause` then toggles it off.
+7. NPC keys from `GetPathName`, e.g. `OW_R2_Ch2.TheWorld:PersistentLevel:RPawnVillainOutcast_15`, are the same on
+   every copy of the same level: a guest finds the host's NPC with `FindObject<RBMPawnAI>(key)`.
+   `RCharacter.StaticCreatePawn` is the spawn call (not on RBMPawnAI). Class paths: `BmScript.RPawnVillainOutcast`.
+8. `RPawnVillain` overrides `TakeDamage`: hook both `RPawn` and `RPawnVillain`.
+9. **Following the host's map:** `open <url>` from inside a running game closed it; `start <url>` (BmSDK demo path)
+   reloads fine outside a room. Inside a room it crashed until the mod stopped touching actors in the frame of the
+   travel: the load happens inside the ConsoleCommand call, and the puppet update right after spawned into a dying
+   world. Now: compare the WorldInfo pointer every frame and forget (never call into) old actors; skip the rest of the
+   frame once travel starts; guest re-requests a snapshot after any world change.
+10. Guest digest must hash only keys the host tracks (plus its own set flags), or a host that tracks fewer keys
+    repairs the guest every 5 s for nothing.
+11. Merge rules for a guest's own (native) progress: flags OR, chapters max; a guest losing state is repaired, never sent.
+
+Two copies of the game do not fit in memory on this PC (one copy 1.4 GB, 1.5 GB free with it running), so the in-game
+sync lab plays one real copy against a bot in each role (lab/ingame_sync.py): 17/17 PASS. Real two-game sessions: untested.

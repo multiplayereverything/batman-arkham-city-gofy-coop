@@ -1,0 +1,8 @@
+12:49:40.935 BatCoopLink 0.2.0 (batcoop-2) on 127.0.0.1:38965, pid 21316
+12:49:41.345 mod connected (#1)
+12:49:41.351 mod 0.2.0 says hello as 'Dbg'
+12:49:44.702 state Connecting: Opening a direct room...
+12:49:44.706 state Hosting: Hosting on port 37955 (direct)
+12:49:47.766 state Idle: Left the game
+12:49:47.972 mod disconnected
+12:49:47.972 bye

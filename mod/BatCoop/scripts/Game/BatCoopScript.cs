@@ -32,6 +32,20 @@ public sealed class BatCoopScript : Script
     (Vector3 center, float radius, double start, double end)? _labWalk;
     readonly List<(double until, string text)> _toasts = [];
     StreamWriter? _log;
+    GameWorldPort? _worldPort;
+    readonly NpcHostPort _npcHost = new();
+    NpcGuestBinder? _binder;
+    bool _skipping;
+    bool _wasInRoom;
+    double _nextSlow;
+    string _lastTravel = "";
+    double _travelNotBefore;
+    bool? _labWatching;      // lab override for "watching a cutscene"
+    public long PausesBlocked;
+    double _nextCatalogScan;
+    IntPtr _worldPtr;
+    bool _traveling;
+    double _travelStarted;
 
     TransportKind Transport => _cfg.Str("Transport", "steam").Equals("direct", StringComparison.OrdinalIgnoreCase) ? TransportKind.Direct : TransportKind.Steam;
     int LinkPort => _cfg.Int("LinkPort", Versions.DefaultLinkPort);
@@ -51,11 +65,18 @@ public sealed class BatCoopScript : Script
         _cfg = CoopConfig.Load(ini);
 
         Directory.CreateDirectory(Path.Combine(dir, "logs"));
-        try { _log = new StreamWriter(Path.Combine(dir, "logs", "batcoop.log"), append: false) { AutoFlush = true }; } catch { }
+        // LogTag keeps two game copies on one PC (the lab) from writing the same file.
+        var tag = _cfg.Str("LogTag", "");
+        try { _log = new StreamWriter(Path.Combine(dir, "logs", tag.Length > 0 ? $"batcoop-{tag}.log" : "batcoop.log"), append: false) { AutoFlush = true }; } catch { }
 
         _world.PlayerName = _cfg.Str("Name", "");
         _session = new CoopSession(Log);
         _session.Chat += (rp, text) => Toast($"{rp.Name}: {text}");
+        _worldPort = new GameWorldPort(Log);
+        _binder = new NpcGuestBinder(Log);
+        if (_cfg.Bool("WorldSync", true)) _session.WorldPort = _worldPort;
+        if (_cfg.Bool("NpcSync", true)) _session.NpcPort = _npcHost;
+        _session.Vote.SkipNow += DoSkip;
         _puppets = new PuppetManager(Log) { MirrorPhysics = _cfg.Bool("PuppetMirrorPhysics", false) };
         if (_cfg.Str("Puppet", "player").Equals("none", StringComparison.OrdinalIgnoreCase)) _puppets.Kind = PuppetKind.None;
 
@@ -90,6 +111,7 @@ public sealed class BatCoopScript : Script
     {
         // Hot reload or shutdown: leave nothing behind in the world.
         _puppets?.DestroyAll();
+        if (_session != null) _binder?.ReleaseAll(_session.NpcGuest);
         _session?.Dispose();
         _bridge?.Dispose();
         _probe?.Dispose();
@@ -97,6 +119,145 @@ public sealed class BatCoopScript : Script
         _session = null;
         if (Instance == this) Instance = null;
     }
+
+    // ---------- used by SyncHooks ----------
+
+    internal GameWorldPort World => _worldPort!;
+    public bool IsHostNow => _session?.IsHost == true;
+
+    /// <summary>On a guest in a co-op game, shared story writes from our own scripts go to the host instead.</summary>
+    public bool GateWorldWrites => _session is { InRoom: true, IsHost: false } s && s.WorldPort != null && !s.World.Applying;
+
+    public void WorldIntent(in WorldEffect e)
+    {
+        _session!.World.GuestIntent(e);
+        Log($"intent to host: {e.Key}={(e.Kind == WorldValueKind.Str ? e.Str : e.Int.ToString())}");
+    }
+
+    /// <summary>A guest hitting an NPC the host owns: send the hit to the host and do nothing locally.</summary>
+    public bool ForwardNpcHit(Pawn pawn, int damage, Vector3 at, Vector3 momentum, Class? damageType)
+    {
+        if (_session is not { InRoom: true, IsHost: false } || NpcGuestBinder.ApplyingLocal || _binder == null) return false;
+        var m = _binder.MirrorOf(pawn);
+        if (m == null) return false;
+        _session.NpcGuest.SendHit(new NpcHit(m.Info.Id, damage, at, momentum, damageType?.GetPathName(null) ?? "", 0));
+        return true;
+    }
+
+    public bool BlockPause => _session is { InRoom: true };
+
+    public bool VoteInsteadOfSkip => _session is { InRoom: true } && !_skipping;
+
+    public void VoteSkip()
+    {
+        var s = _session!;
+        s.Vote.LocalVote(s.IsHost, s.LocalId);
+        Toast("You voted to skip the cutscene");
+    }
+
+    void DoSkip()
+    {
+        Log("cutscene vote passed: skipping");
+        _skipping = true;
+        try { BmSDK.Framework.Game.GetPlayerController().SkipCutscene(); }
+        catch (Exception e) { Log("skip failed: " + e.Message); }
+        finally { _skipping = false; }
+    }
+
+    // ---------- co-op room upkeep (every frame while in a room) ----------
+
+    /// <summary>A level load replaces every actor. Notice it before touching any actor we hold: compare the world
+    /// object every frame, and forget (never call into) puppets and NPC pawns from the old world.</summary>
+    bool WorldStillOurs()
+    {
+        IntPtr wi;
+        try { wi = BmSDK.Framework.Game.GetWorldInfo().Ptr; } catch { wi = IntPtr.Zero; }
+        if (wi != _worldPtr)
+        {
+            if (_worldPtr != IntPtr.Zero) Log("world changed: forgetting actors from the old world");
+            _worldPtr = wi;
+            _puppets?.Forget();
+            if (_session != null) _binder?.ForgetAll(_session.NpcGuest);
+            if (_session is { InRoom: true, IsHost: false }) _session.World.Resync();
+            _traveling = false;
+        }
+        if (_traveling && _world.Now - _travelStarted > 60) { _traveling = false; Log("travel did not change the world in 60 s; carrying on"); }
+        return wi != IntPtr.Zero && !_traveling;
+    }
+
+    void RoomTick()
+    {
+        var s = _session!;
+        double now = _world.Now;
+        if (!s.InRoom)
+        {
+            if (_wasInRoom) { _binder?.ReleaseAll(s.NpcGuest); Log("left the room: NPCs handed back to local AI"); }
+            _wasInRoom = false;
+            return;
+        }
+        _wasInRoom = true;
+
+        // No pause in multiplayer: the world keeps running behind menus and when the window loses focus.
+        try
+        {
+            var engine = BmSDK.Framework.Game.GetEngine();
+            if (engine.bPauseOnLossOfFocus) engine.bPauseOnLossOfFocus = false;
+            var wi = BmSDK.Framework.Game.GetWorldInfo();
+            if (wi.Pauser != null) { wi.Pauser = null; PausesBlocked++; }
+        }
+        catch { }
+
+        // Cutscene vote: tell the host whether we are watching a cutscene.
+        bool watching = _labWatching ?? IsInCutscene();
+        s.Vote.LocalWatching(watching, s.IsHost, s.LocalId);
+
+        var pawn = LocalWorld.TryGetPawn();
+        if (!s.IsHost && _binder != null && pawn != null) _binder.Update(s.NpcGuest, pawn.Location, now);
+
+        if (now >= _nextSlow)
+        {
+            _nextSlow = now + 1;
+            _worldPort?.RetryPending();
+            if (now >= _nextCatalogScan && _worldPort != null)
+            {
+                _nextCatalogScan = now + 15;   // new map areas stream in with their own scripts
+                int added = _worldPort.ScanCatalog();
+                if (added > 0) Log($"flag catalog: +{added} names ({_worldPort.Catalog.Count})");
+            }
+        }
+
+        // Same mission, same map: a guest follows the host into its map.
+        if (!s.IsHost && _worldPort?.TravelTo is { } map && pawn != null && now >= _travelNotBefore)
+        {
+            _worldPort.TravelTo = null;
+            if (map != _lastTravel || now >= _travelNotBefore + 60)
+            {
+                _lastTravel = map;
+                _travelNotBefore = now + 20;
+                var url = _worldPort.HostUrl(map);
+                // "start" is how BmSDK's own demo enters a world; "open" from inside a running game closed it.
+                var cmd = _cfg.Str("FollowCommand", "start") + " " + url;
+                Toast($"Following the host to {map}");
+                Log("following host: " + cmd);
+                // The load can happen inside this call: touch no actor until the new world is in place.
+                _traveling = true;
+                _travelStarted = now;
+                _puppets?.Forget();
+                _binder?.ForgetAll(s.NpcGuest);
+                try { BmSDK.Framework.Game.GetPlayerController().ConsoleCommand(cmd, false); }
+                catch (Exception e) { Log("follow failed: " + e.Message); }
+                return;
+            }
+        }
+    }
+
+    static bool IsInCutscene()
+    {
+        try { return BmSDK.Framework.Game.GetPlayerController().bCinematicMode; }
+        catch { return false; }
+    }
+
+    internal void HookLog(string s) => Log("hook " + s);
 
     void Log(string s)
     {
@@ -120,7 +281,9 @@ public sealed class BatCoopScript : Script
     {
         Log($"entered world '{SafeMapName()}'");
         ApplyRunInBackground();
-        _puppets?.DestroyAll(); // actors from the previous world are gone with it
+        _puppets?.Forget(); // actors from the previous world are gone with it
+        if (_session != null) _binder?.ForgetAll(_session.NpcGuest);
+        _worldPort?.OnWorldLoaded();
     }
 
     static string SafeMapName()
@@ -265,10 +428,13 @@ public sealed class BatCoopScript : Script
         try
         {
             PumpLinkStart();
+            if (!WorldStillOurs()) { ServeBridge(); return; }
             _world.Refresh();
             _session.LocalWorld = _world.WorldName;
             LabTick();
             _session.Update(_world);
+            RoomTick();
+            if (_traveling) { ServeBridge(); return; } // a level load started this frame: spawn and move nothing
             _puppets?.Update(_session, _world.WorldName, _world.Now);
             ProbeTick();
             ServeBridge();
@@ -343,7 +509,24 @@ public sealed class BatCoopScript : Script
     static void PostRenderRedirect(RHUD self)
     {
         self.PostRender();
+        try { Instance?.WhilePausedTick(); } catch { }
         try { Instance?.DrawHud(self); } catch { }
+    }
+
+    /// <summary>The HUD still renders while the world is paused (and OnTick does not run). In a co-op room, undo any
+    /// pause that got through, and keep answering the lab bridge so a paused game never looks hung.</summary>
+    void WhilePausedTick()
+    {
+        bool paused;
+        try { paused = BmSDK.Framework.Game.GetWorldInfo().Pauser != null; } catch { return; }
+        if (!paused) return;
+        if (_session is { InRoom: true })
+        {
+            BmSDK.Framework.Game.GetWorldInfo().Pauser = null;
+            PausesBlocked++;
+            Log("pause undone (co-op game)");
+        }
+        ServeBridge();
     }
 
     void DrawHud(HUD hud)
@@ -378,6 +561,14 @@ public sealed class BatCoopScript : Script
             Text($"  {rp.Name}  {rp.Info?.Character}  {where}  {ping}", 150, 210, 255);
         }
 
+        if (_session.InRoom)
+        {
+            var w = _session.World;
+            string npc = _session.IsHost ? $"sharing {_session.NpcHost.SharedCount} NPCs" : $"{_binder?.Bound ?? 0} host NPCs";
+            Text($"  World: step {w.Seq}{(w.Repairs > 0 ? $", {w.Repairs} repairs" : "")}  |  {npc}", 170, 170, 170);
+            if (_session.Vote.Active)
+                Text($"  Cutscene: {_session.Vote.Votes}/{_session.Vote.Needed} voted to skip{(_session.Vote.LocalVoted ? "" : " - press skip to vote")}", 255, 220, 90);
+        }
         DrawNameTags(hud, c);
 
         double now = _world.Now;
@@ -455,6 +646,94 @@ public sealed class BatCoopScript : Script
                 _puppets.MirrorPhysics = parts.Length > 2 && parts[2] == "mirror";
                 _puppets.DestroyAll();
                 return Ok(("kind", _puppets.Kind.ToString()), ("mirror", _puppets.MirrorPhysics));
+            case "hooks":
+                return Ok(("calls", new LabBridge.RawJson(LabBridge.Json(SyncHooks.Calls.Select(kv => (kv.Key, (object?)kv.Value)).ToArray()))));
+            case "flagnames":
+                var saved = GameWorldPort.SavedFlagNames();
+                return Ok(("count", saved.Count), ("sample", saved.Take(15).ToList()));
+            case "flags":
+                if (_worldPort!.Catalog.Count == 0) _worldPort.ScanCatalog();
+                var names = _worldPort.SetGlobalFlags();
+                var like = parts.Length > 1 ? parts[1] : "";
+                return Ok(("catalog", _worldPort.Catalog.Count), ("set", names.Count), ("read_ms", _worldPort.LastReadMs),
+                          ("sample", names.Where(n => n.Contains(like, StringComparison.OrdinalIgnoreCase)).Take(25).ToList()));
+            case "getflag":
+                return Ok(("value", BmSDK.Framework.Game.GetPlayerController().GetFlagManager().GetGlobalFlag(parts[1])));
+            case "setflag":
+                // Like a Kismet script setting a flag natively: the engine changes, and the name is one the catalog knows.
+                BmSDK.Framework.Game.GetPlayerController().GetFlagManager().SetGlobalFlag(parts[1], parts.Length < 3 || parts[2] != "0");
+                _worldPort!.Catalog.Add(parts[1]);
+                return Ok();
+            case "chapter":
+                var pd = BmSDK.Framework.Game.GetPersistentData();
+                if (parts.Length > 1) pd.CurrentChapter = byte.Parse(parts[1]);
+                return Ok(("chapter", (int)pd.CurrentChapter), ("sub", (int)pd.CurrentSubChapter), ("primary", pd.PrimaryObjective.ToString()));
+            case "world":
+                var ws = _session!.World;
+                var cur = _worldPort!.Read();
+                return Ok(("seq", ws.Seq), ("baseline", ws.HasBaseline), ("committed", ws.TxnsCommitted), ("applied", ws.TxnsApplied),
+                          ("intents_sent", ws.IntentsSent), ("intents_applied", ws.IntentsApplied), ("repairs", ws.Repairs),
+                          ("snapshots", ws.SnapshotsApplied), ("values", cur?.CountSet ?? -1), ("hash", cur?.Hash().ToString("X16") ?? ""),
+                          ("committed_hash", ws.Committed.Hash().ToString("X16")), ("pending_object_flags", _worldPort.PendingObjectFlags),
+                          ("map", GameWorldPort.MapName()), ("url", GameWorldPort.LocalUrl()));
+            case "npcs":
+                var list = BmSDK.Framework.Game.FindObjects<RBMPawnAI>().Where(NpcHostPort.IsLive).ToList();
+                var mePos = LocalWorld.TryGetPawn()?.Location ?? Vector3.Zero;
+                var nearest = list.OrderBy(n => Vector3.Distance(n.Location, mePos)).Take(6)
+                    .Select(n => new LabBridge.RawJson(LabBridge.Json(("key", n.GetPathName(null)), ("class", n.Class.Name.ToString()),
+                        ("char", n.CharactersType?.Name.ToString()), ("pos", n.Location), ("health", n.Health), ("hidden", n.bHidden),
+                        ("dist", Vector3.Distance(n.Location, mePos))))).ToList();
+                var mirrors = _session!.NpcGuest.Mirrors.Values.Take(8).Select(m => new LabBridge.RawJson(LabBridge.Json(
+                    ("id", (int)m.Info.Id), ("key", m.Info.Key), ("bound", m.Local is RBMPawnAI), ("spawned", m.Spawned),
+                    ("local_pos", m.Local is RBMPawnAI lp && lp.IsValid ? lp.Location : (object?)null), ("host_pos", m.Latest.Pos),
+                    ("local_health", m.Local is RBMPawnAI lh && lh.IsValid ? lh.Health : -1), ("host_health", (int)m.Latest.Health)))).ToList();
+                return Ok(("live", list.Count), ("shared", _session!.NpcHost.SharedCount), ("mirrors", _session.NpcGuest.Mirrors.Count), ("mirror_list", mirrors),
+                          ("bound", _binder?.Bound ?? 0), ("suppressed", _binder?.Suppressed ?? 0), ("spawn_failures", _binder?.SpawnFailures ?? 0),
+                          ("hits_sent", _session.NpcGuest.HitsSent), ("hits_applied", _session.NpcHost.HitsApplied), ("nearest", nearest));
+            case "npcdump":
+                // Lab: the nearest live AI pawns with everything a bot host needs to replay them.
+                var at = LocalWorld.TryGetPawn()?.Location ?? Vector3.Zero;
+                int take = parts.Length > 1 ? int.Parse(parts[1]) : 8;
+                var dump = BmSDK.Framework.Game.FindObjects<RBMPawnAI>().Where(NpcHostPort.IsLive)
+                    .OrderBy(n => Vector3.Distance(n.Location, at)).Take(take)
+                    .Select(n => new LabBridge.RawJson(LabBridge.Json(("key", n.GetPathName(null)), ("class", n.Class.GetPathName(null)),
+                        ("char", n.CharactersType?.GetPathName(null) ?? ""), ("pos", n.Location), ("health", n.Health)))).ToList();
+                return Ok(("npcs", dump));
+            case "spawnthug":
+                // Lab: put a thug next to the local player, the way BmSDK's DemoScript spawns the Joker.
+                var me = LocalWorld.TryGetPawn() ?? throw new InvalidOperationException("no pawn");
+                BmSDK.Framework.Game.LoadPackage(parts.Length > 2 ? parts[2] : "FunFair");
+                var thugChar = BmSDK.Framework.Game.FindObject<Class>(parts.Length > 1 ? parts[1] : "BmScript.RCharacter_Joker");
+                var thug = new RPawnVillainThug(me.Location + new Vector3(250, 0, 0), me.Rotation);
+                if (thugChar != null) thug.InitCharacter(thugChar);
+                return Ok(("key", thug.GetPathName(null)), ("char", thugChar?.GetPathName(null)));
+            case "hit":
+                // Lab: hit the nearest NPC the way the game does (TakeDamage), so the co-op hooks route it.
+                var hp = LocalWorld.TryGetPawn() ?? throw new InvalidOperationException("no pawn");
+                var target = BmSDK.Framework.Game.FindObjects<RBMPawnAI>().Where(NpcHostPort.IsLive)
+                    .OrderBy(n => Vector3.Distance(n.Location, hp.Location)).FirstOrDefault() ?? throw new InvalidOperationException("no NPC");
+                int dmg = parts.Length > 1 ? int.Parse(parts[1]) : 30;
+                // Same path as the TakeDamage hook (a call from C# would bypass the hook itself).
+                bool forwarded = ForwardNpcHit(target, dmg, target.Location, Vector3.Zero, null);
+                if (!forwarded) target.TakeDamage(dmg, BmSDK.Framework.Game.GetPlayerController(), target.Location, Vector3.Zero, null, default, hp);
+                return Ok(("target", target.GetPathName(null)), ("forwarded_to_host", forwarded), ("health_now", target.Health));
+            case "pause":
+                BmSDK.Framework.Game.GetPlayerController().ConsoleCommand("pause", false);
+                return Ok(("paused_right_after", BmSDK.Framework.Game.GetWorldInfo().Pauser != null), ("blocked_total", PausesBlocked));
+            case "unpause":
+                BmSDK.Framework.Game.GetWorldInfo().Pauser = null;
+                return Ok();
+            case "paused":
+                return Ok(("paused", BmSDK.Framework.Game.GetWorldInfo().Pauser != null), ("time", BmSDK.Framework.Game.GetWorldInfo().TimeSeconds), ("blocked_total", PausesBlocked));
+            case "watch":
+                _labWatching = parts.Length > 1 && parts[1] == "off" ? false : parts.Length > 1 && parts[1] == "auto" ? null : true;
+                return Ok(("watching", _labWatching?.ToString() ?? "auto"));
+            case "skip":
+                // Same path as the SkipCutscene hook (a call from C# would bypass the hook itself).
+                if (VoteInsteadOfSkip) VoteSkip(); else BmSDK.Framework.Game.GetPlayerController().SkipCutscene();
+                return Ok(("votes", _session!.Vote.Votes), ("needed", _session.Vote.Needed), ("skips_done", _session.Vote.SkipsDone));
+            case "vote":
+                return Ok(("votes", _session!.Vote.Votes), ("needed", _session.Vote.Needed), ("active", _session.Vote.Active), ("skips_done", _session.Vote.SkipsDone), ("cinematic", IsInCutscene()));
             case "probe":
                 _probe?.Dispose();
                 _probe = parts.Length > 2 ? new ProbeWriter(parts[1], parts[2]) : null;

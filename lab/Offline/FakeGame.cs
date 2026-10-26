@@ -50,6 +50,7 @@ public sealed class FakeNpcs : INpcHostPort
         public Vector3 Center;
         public float Radius, Speed;
         public int Health = 100;
+        public string PawnClass = "RPawnVillainThug", CharacterClass = "RCharacter_JokerThug1";
         public List<NpcHit> Hits = [];
     }
 
@@ -76,7 +77,7 @@ public sealed class FakeNpcs : INpcHostPort
         {
             var st = new NpcState { Pos = PosOf(n, t), Yaw = 0, Health = (ushort)Math.Max(0, n.Health),
                                     Flags = n.Health <= 0 ? NpcFlags.Down : NpcFlags.None, Physics = 1 };
-            yield return new NpcSample(n.Handle, n.Key, "RPawnVillainThug", "RCharacter_JokerThug1", st);
+            yield return new NpcSample(n.Handle, n.Key, n.PawnClass, n.CharacterClass, st);
         }
     }
 

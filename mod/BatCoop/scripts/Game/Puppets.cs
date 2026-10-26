@@ -147,6 +147,13 @@ public sealed class PuppetManager
         _log($"puppet {id} removed");
     }
 
+    /// <summary>The world these puppets lived in is gone: drop the references without calling into them.</summary>
+    public void Forget()
+    {
+        _puppets.Clear();
+        _retryAt.Clear();
+    }
+
     public void DestroyAll()
     {
         foreach (var id in _puppets.Keys.ToList()) Destroy(id);

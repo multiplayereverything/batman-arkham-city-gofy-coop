@@ -78,6 +78,18 @@ public sealed class WorldState
     }
 
     public int CountSet => Values.Values.Count(v => v.Kind != WorldValueKind.Flag || v.Int != 0);
+
+    /// <summary>Hash of this (guest) state as the host would see it: only keys the host tracks, plus flags we have
+    /// set that the host does not. Numbers or text only this machine tracks are not drift.</summary>
+    public ulong HashAgainst(WorldState host)
+    {
+        var t = new WorldState();
+        foreach (var k in host.Values.Keys)
+            if (Values.TryGetValue(k, out var v)) t.Set(v);
+        foreach (var (k, v) in Values)
+            if (!host.Values.ContainsKey(k) && v.Kind == WorldValueKind.Flag && v.Int != 0) t.Set(v);
+        return t.Hash();
+    }
 }
 
 /// <summary>What the session needs from a game (or from the lab's fake world).</summary>
@@ -102,6 +114,8 @@ public sealed class WorldSync
     WorldState _committed = new();
     uint _seq;            // host: last committed; guest: last applied
     uint _intentSeq;
+    readonly Dictionary<string, (WorldEffect e, double at)> _pendingIntents = new(StringComparer.Ordinal);
+    double _nextGuestObserve;
     bool _haveBaseline;   // guest: a snapshot was applied
     double _nextObserve, _nextDigest, _lastSnapshotAsk = -100;
 
@@ -130,7 +144,7 @@ public sealed class WorldSync
 
     public void Reset()
     {
-        _hostLog.Clear(); _pending.Clear(); _committed = new(); _seq = 0; _haveBaseline = false;
+        _hostLog.Clear(); _pending.Clear(); _committed = new(); _seq = 0; _haveBaseline = false; _pendingIntents.Clear();
         _nextObserve = _nextDigest = 0;
     }
 
@@ -233,7 +247,7 @@ public sealed class WorldSync
     void ApplyTxn(uint seq, List<WorldEffect> fx, IWorldPort port)
     {
         Applying = true;
-        try { foreach (var e in fx) { port.Apply(e); _committed.Set(e); } }
+        try { foreach (var e in fx) { port.Apply(e); _committed.Set(e); _pendingIntents.Remove(e.Key); } }
         finally { Applying = false; }
         _seq = seq;
         TxnsApplied++;
@@ -251,9 +265,24 @@ public sealed class WorldSync
         }
     }
 
+    /// <summary>Guest: our world was replaced (a level load). Ask for the host's state again, and report no
+    /// progress of our own until it is applied: a fresh level's default flags are not something we did.</summary>
+    public void Resync()
+    {
+        _haveBaseline = false;
+        _pendingIntents.Clear();
+        _lastSnapshotAsk = -100;
+    }
+
     void ApplySnapshot(uint seq, WorldState snap, IWorldPort port)
     {
-        var local = port.Read() ?? new WorldState();
+        var local = port.Read();
+        if (local == null)
+        {
+            // Still loading: apply when there is a world to apply to (GuestTick asks again).
+            _lastSnapshotAsk = -100;
+            return;
+        }
         // Force-set everything the host has, and clear flags we have that the host does not.
         var fx = snap.DiffFrom(local);
         Applying = true;
@@ -267,19 +296,52 @@ public sealed class WorldSync
         DrainPending(port);
     }
 
-    /// <summary>Guest: periodically prove we match the host, so it can repair us if we drifted.</summary>
+    /// <summary>Is a local value a step forward from the host's (a flag turned on, a chapter raised)? Those are the
+    /// guest's own progress and go to the host as intents. Steps back are never sent: the digest repairs them.
+    /// (coop-anything effect-capture merge rules: flags OR, stage numbers maximum wins, text host wins.)</summary>
+    static bool IsProgress(in WorldEffect local, WorldState committed)
+    {
+        if (local.Key.StartsWith("lvl:", StringComparison.Ordinal) || local.Key.StartsWith("obj:", StringComparison.Ordinal)) return false;
+        committed.Values.TryGetValue(local.Key, out var host);
+        return local.Kind switch
+        {
+            WorldValueKind.Flag => local.Int != 0 && (host.Key == null || host.Int == 0),
+            WorldValueKind.Int => host.Key == null || local.Int > host.Int,
+            _ => false,
+        };
+    }
+
+    /// <summary>Guest: report our own progress as intents, and periodically prove we match the host so it can
+    /// repair anything else that drifted.</summary>
     public void GuestTick(IWorldPort port, double now)
     {
         if (!_haveBaseline)
         {
-            AskSnapshot(now);
+            if (port.Read() != null) AskSnapshot(now);
             return;
         }
+        if (now >= _nextGuestObserve)
+        {
+            _nextGuestObserve = now + ObserveEvery;
+            var local = port.Read();
+            if (local != null)
+            {
+                foreach (var e in local.DiffFrom(_committed))
+                {
+                    if (!IsProgress(e, _committed)) continue;
+                    if (_pendingIntents.TryGetValue(e.Key, out var p) && p.e == e && now - p.at < 5) continue; // already asked
+                    _pendingIntents[e.Key] = (e, now);
+                    GuestIntent(e);
+                }
+            }
+        }
+        // While our own progress is on its way to the host, a digest would only report it as drift.
+        if (_pendingIntents.Count > 0 && _pendingIntents.Values.Any(p => now - p.at < 5)) return;
         if (now < _nextDigest || Mutants.On("no_digest")) return;
         _nextDigest = now + DigestEvery;
         var cur = port.Read();
         if (cur == null) return;
-        _send(PeerIds.Host, true, new WireWriter().U8(Channel).U8((byte)WorldMsg.Digest).U32(_seq).U64(cur.Hash()).ToArray());
+        _send(PeerIds.Host, true, new WireWriter().U8(Channel).U8((byte)WorldMsg.Digest).U32(_seq).U64(cur.HashAgainst(_committed)).ToArray());
     }
 
     // ---------------- encoding ----------------
