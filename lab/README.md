@@ -51,6 +51,7 @@ So `--avatar host=game:0x100>bot:0x200` compares the host's real movement with w
 | `python -I lab/track_check.py` | How far the animated puppet is from its interpolated target (xy and height) while a bot circles. |
 | `sh lab/botfriend.sh <s> <radius> <speed> <log> [x,y,z] [bot args]` | Hosts on the game copy (bridge 37900) and starts a bot that joins, circles or stands, attacks in PVP and chats. |
 | `python -I lab/shot.py 37900 out.png` | The game's own screenshot as PNG. |
+| `python -I lab/display_keep.py show\|save\|restore` | The player's resolution in `BmEngine.ini`. Lab copies run in a window and the game saves its window size on quit, so `launch.py` and `ingame.py` save it before a run and restore it after. |
 | `powershell -File lab/AudioMeter.ps1 -ProcessId <pid>` | Peak level of the game's Windows audio session (an unfocused game window reports silence, so this only helps with a focused window). |
 
 New bridge commands: `insp <expr> [depth] [filter]`, `methods <expr> [filter]`, `call <expr> <Method> [args]`,

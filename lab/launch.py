@@ -21,6 +21,15 @@ OWNER = "batcoop-launch"
 OUT = os.path.join(ROOT, "lab", "out", "session")
 
 
+def display_keep():
+    """lab/display_keep.py (the player's resolution through lab runs); -I leaves lab/ off sys.path."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("display_keep", os.path.join(ROOT, "lab", "display_keep.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 def pids():
     p = subprocess.run(["tasklist", "/FI", "IMAGENAME eq BatmanAC.exe", "/FO", "CSV", "/NH"], capture_output=True, text=True)
     return {int(l.split('","')[1]) for l in p.stdout.splitlines() if l.lower().startswith('"batmanac')}
@@ -38,6 +47,7 @@ def start(roles):
     if r.returncode != 0:
         sys.exit("gameslot: " + (r.stdout + r.stderr).strip())
     os.makedirs(OUT, exist_ok=True)
+    display_keep().save()  # lab copies run in a window; the game saves its window size when it quits
     started = []
     for i, role in enumerate(roles):
         before = pids()
@@ -73,6 +83,9 @@ def stop():
         if s["pid"] in running:
             subprocess.run(["taskkill", "/PID", str(s["pid"]), "/F"], capture_output=True)
             print(f"closed {s['role']} (pid {s['pid']})")
+    time.sleep(2)
+    if not pids():
+        print("resolution restored:", display_keep().restore())
     gameslot("release", "--owner", OWNER)
     if os.path.exists(STATE):
         os.remove(STATE)

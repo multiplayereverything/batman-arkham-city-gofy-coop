@@ -7,6 +7,7 @@ BmGame/Mods/BatCoop/scripts/Core/ChatFeed.cs
 BmGame/Mods/BatCoop/scripts/Core/CoopConfig.cs
 BmGame/Mods/BatCoop/scripts/Core/CoopSession.cs
 BmGame/Mods/BatCoop/scripts/Core/CutsceneVote.cs
+BmGame/Mods/BatCoop/scripts/Core/DisplaySettings.cs
 BmGame/Mods/BatCoop/scripts/Core/GameMessages.cs
 BmGame/Mods/BatCoop/scripts/Core/HostSettings.cs
 BmGame/Mods/BatCoop/scripts/Core/LinkClient.cs
@@ -21,6 +22,7 @@ BmGame/Mods/BatCoop/scripts/Core/WorldSync.cs
 BmGame/Mods/BatCoop/scripts/Game/AnimBridge.cs
 BmGame/Mods/BatCoop/scripts/Game/BatCoopScript.cs
 BmGame/Mods/BatCoop/scripts/Game/CoopUi.cs
+BmGame/Mods/BatCoop/scripts/Game/DisplayGuard.cs
 BmGame/Mods/BatCoop/scripts/Game/GameWorldPort.cs
 BmGame/Mods/BatCoop/scripts/Game/InputHooks.cs
 BmGame/Mods/BatCoop/scripts/Game/LabBridge.cs

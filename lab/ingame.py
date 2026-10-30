@@ -31,6 +31,16 @@ LINK_PORT = 37940
 DIRECT_PORT = 37950
 OWNER = "batcoop-ingame"
 
+
+def display_keep():
+    """lab/display_keep.py (the player's resolution through lab runs); -I leaves lab/ off sys.path."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("display_keep", os.path.join(ROOT, "lab", "display_keep.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
 results = []
 
 
@@ -190,6 +200,7 @@ def main():
         "BATCOOP_PROBEMACHINE": "game",
     })
     t_launch = time.time()
+    display_keep().save()  # the game saves its window size as the resolution when it quits
     log("launching Arkham City (windowed 1280x720)")
     subprocess.Popen([EXE, "-windowed", "-ResX=1280", "-ResY=720", "-nostartupmovies"], cwd=os.path.dirname(EXE), env=env)
 
@@ -318,6 +329,8 @@ def main():
             for pid in game_pids() & pids:
                 log(f"game {pid} still running; ending it by pid")
                 subprocess.run(["taskkill", "/PID", str(pid), "/F"], capture_output=True)
+        if not (game_pids() & pids):
+            display_keep().restore()
         gameslot("release", "--owner", OWNER)
 
     ok = all(r[1] for r in results)

@@ -4,7 +4,7 @@ by NickBin (RealAnxiousGit)
 Roam Arkham City together. Every player runs their own game and sees the other players move through the
 city in real time. Friends join over Steam without opening ports, or over a direct IP address on a LAN or VPN.
 
-Status: **0.3.0, early**. Players walk, run and fight with the game's own animations; the story, missions, NPCs and
+Status: **0.3.1, early**. Players walk, run and fight with the game's own animations; the story, missions, NPCs and
 cutscene skips are shared; there is a chat, a host menu and an optional PVP mode. See "What syncs" below.
 
 ## Requirements
@@ -23,10 +23,10 @@ https://github.com/dege-diosg/dgVoodoo2/
 2. Copy the `BatCoop` folder into `<game folder>\BmGame\Mods\`, so you have
    `BmGame\Mods\BatCoop\mod.toml`, `scripts\` and `link\BatCoopLink.exe`.
 3. Start the game normally. BmSDK compiles BatCoop at start-up; `Binaries\Win32\BmSDK.log` says
-   `[BatCoop] ... compiled` and `BatCoop 0.3.0 ... loaded`.
+   `[BatCoop] ... compiled` and `BatCoop 0.3.1 ... loaded`.
 
-Updating from 0.2: replace the whole `BatCoop` folder but keep your `BatCoop.ini`. Everyone in a game needs 0.3.0
-(0.2 and 0.3 refuse each other with "Version mismatch").
+Updating from 0.2 or 0.3.0: replace the whole `BatCoop` folder but keep your `BatCoop.ini`. Everyone in a game needs 0.3.x
+(0.2 and 0.3 refuse each other with "Version mismatch"; 0.3.0 and 0.3.1 play together).
 
 To uninstall, delete `BmGame\Mods\BatCoop`.
 
@@ -165,6 +165,11 @@ and NPC attack animations on guests (they move and get knocked out, but do not p
 - **Firewall prompt for BatCoopLink**: needed only for direct (IP) play as host.
 - **Shown as "Player"**: Steam was not running when the link started; set `Name=` in `BatCoop.ini`.
 - **T does not open the chat**: the chat only opens in a co-op game; check `ChatKey=` in `BatCoop.ini`.
+- **The game starts in a tiny window / at the lowest resolution**: when the game quits while it runs in a window,
+  it saves the window's size as your resolution (`Documents\WB Games\Batman Arkham City GOTY\BmGame\Config\BmEngine.ini`,
+  `[SystemSettings]` `ResX`/`ResY`/`Fullscreen`), so a shrunk window comes back at every start. Since 0.3.1 BatCoop
+  notices a saved size below 640x360, resizes the window at once and puts back the launcher's resolution (or the
+  desktop's, fullscreen) after the game quits. `DisplayGuard=0` in `BatCoop.ini` turns this off.
 
 ## Building from source and the testing lab
 See `lab/README.md`. In short:

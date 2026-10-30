@@ -15,6 +15,7 @@
     <!-- The wire format is shared with the mod: compile the same source files. -->
     <Compile Include="..\..\mod\BatCoop\scripts\Core\Wire.cs" Link="Shared\Wire.cs" />
     <Compile Include="..\..\mod\BatCoop\scripts\Core\LinkProto.cs" Link="Shared\LinkProto.cs" />
+    <Compile Include="..\..\mod\BatCoop\scripts\Core\DisplaySettings.cs" Link="Shared\DisplaySettings.cs" />
   </ItemGroup>
   <ItemGroup>
     <Reference Include="Steamworks.NET">

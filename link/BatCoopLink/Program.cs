@@ -6,12 +6,18 @@
 // --steam   start Steam right away (so invites work before hosting); otherwise on first use
 // --parent  exit when that process (the game) exits
 // --stay    keep running when the mod disconnects (lab use)
+//
+//   BatCoopLink.exe --fix-display <game pid> <BmEngine.ini> <W>x<H> fullscreen|windowed
+// waits for the game to quit (it saves its resolution then), then writes this resolution (see DisplaySettings).
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using BatCoop.Core;
 using BatCoop.Link;
+
+if (args.Length == 5 && args[0] == "--fix-display")
+    return FixDisplay.Run(int.Parse(args[1]), args[2], args[3], args[4]);
 
 int port = Versions.DefaultLinkPort;
 bool steamEarly = false, stay = false;

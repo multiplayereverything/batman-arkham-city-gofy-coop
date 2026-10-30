@@ -29,6 +29,8 @@ public sealed class BatCoopScript : Script
     bool _hudVisible = true;
     bool _labEnterWorld;
     double _labEnterAt = -1;
+    Resolution? _displayFix;   // the resolution DisplayGuard put back this start
+    int _displayResizeTries;
     (Vector3 center, float radius, double start, double end)? _labWalk;
     readonly List<(double until, string text)> _toasts = [];
     StreamWriter? _log;
@@ -102,6 +104,18 @@ public sealed class BatCoopScript : Script
             catch (Exception e) { Log($"lab bridge failed: {e.Message}"); }
         }
         _labEnterWorld = _cfg.Bool("LabEnterWorld", false);
+
+        if (_cfg.Bool("DisplayGuard", true))
+        {
+            try
+            {
+                _displayFix = DisplayGuard.Check(Path.Combine(dir, "link", "BatCoopLink.exe"), Log, out var inWindow);
+                _displayResizeTries = inWindow ? 300 : 0;
+                if (_displayFix is { } d && !inWindow)
+                    Toast($"BatCoop restored your resolution ({d}); restart the game to use it", 20);
+            }
+            catch (Exception e) { Log("display check failed: " + e.Message); }
+        }
         var probePath = _cfg.Str("ProbePath", "");
         if (probePath.Length > 0) _probe = new ProbeWriter(probePath, _cfg.Str("ProbeMachine", "game"));
 
@@ -484,6 +498,20 @@ public sealed class BatCoopScript : Script
     public override void OnTick()
     {
         if (_session == null) return;
+        if (_displayResizeTries > 0 && _displayFix is { } fix)
+        {
+            // The window may not exist yet on the first frames.
+            _displayResizeTries--;
+            try
+            {
+                if (DisplayGuard.ResizeWindow(fix with { Fullscreen = false }, Log))
+                {
+                    _displayResizeTries = 0;
+                    Toast(fix.Fullscreen ? $"BatCoop fixed a tiny saved resolution; the next start opens at {fix}" : $"BatCoop fixed a tiny saved resolution ({fix})", 20);
+                }
+            }
+            catch (Exception e) { _displayResizeTries = 0; Log("display: resize failed: " + e.Message); }
+        }
         try
         {
             PumpLinkStart();

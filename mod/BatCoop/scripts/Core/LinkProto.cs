@@ -12,7 +12,7 @@ namespace BatCoop.Core;
 
 public static class Versions
 {
-    public const string Mod = "0.3.0";
+    public const string Mod = "0.3.1";
     // Bump when anything on the wire changes; peers with a different value are refused at join.
     public const string Protocol = "batcoop-3";
     public const int DefaultLinkPort = 27960;

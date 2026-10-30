@@ -637,6 +637,22 @@ Run("host_only_skip", () =>
     Check("host_only_skip", skipped, $"with 'host only' the host's skip alone skipped for the guest ({skips})");
 });
 
+Run("display_repair", () =>
+{
+    // The shape of BmEngine.ini: CRLF lines, ResX/ResY also in other sections that must stay as they are.
+    var ini = "[Engine.Engine]\r\nResX=9\r\n[SystemSettings]\r\nUseVsync=True\r\nFullscreen=False\r\nResX=140\r\nResY=77\r\nScreenPercentage=100\r\n\r\n[SystemSettingsEditor]\r\nResX=1280\r\nResY=720\r\n";
+    var saved = DisplaySettings.Read(ini);
+    var launcher = DisplaySettings.Read("[SystemSettings]\r\nFullscreen=True\r\nResX=1600\r\nResY=900\r\n");
+    var fix = DisplaySettings.Repair(saved, launcher, 1920, 1080);
+    var written = fix is { } f ? DisplaySettings.Write(ini, f) : ini;
+    bool ok = saved == new Resolution(140, 77, false) && fix == new Resolution(1600, 900, true)
+              && written == ini.Replace("Fullscreen=False", "Fullscreen=True").Replace("ResX=140", "ResX=1600").Replace("ResY=77", "ResY=900")
+              && DisplaySettings.Repair(new Resolution(1280, 720, false), launcher, 1920, 1080) == null
+              && DisplaySettings.Repair(saved, null, 1920, 1080) == new Resolution(1920, 1080, true)
+              && DisplaySettings.Repair(saved, new Resolution(320, 200, true), 2560, 1440) == new Resolution(2560, 1440, true);
+    Check("display_repair", ok, $"tiny {saved} -> {fix}; only [SystemSettings] changed, CRLF kept; a usable size is left alone");
+});
+
 Console.WriteLine($"RESULT: {(failed == 0 ? "PASS" : "FAIL")} ({passed} passed, {failed} failed{(failed > 0 ? ": " + string.Join(", ", failures) : "")})");
 return failed == 0 ? 0 : 1;
 

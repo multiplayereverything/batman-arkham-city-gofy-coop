@@ -90,6 +90,10 @@ public sealed class CoopConfig
         # freezes you for the other players).
         RunInBackground=0
 
+        # 1 = when the game starts at a tiny saved resolution (a shrunk window saved on quit), put back the one
+        # from the game's launcher (or the desktop's) in Documents\WB Games\...\BmEngine.ini.
+        DisplayGuard=1
+
         # Chat and host menu keys (Unreal key names: T, Y, F3, F4, ...). Both can also be changed in the host menu.
         # In a co-op game the chat key is taken by the chat; T is also the game's "secondary group combat move".
         ChatKey=T

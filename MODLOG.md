@@ -199,8 +199,45 @@ Tests at 0.3.0:
 - Not tested: two real players (two PCs), Steam P2P between two accounts, real keyboard/mouse input (the lab calls
   the same functions), PVP between two humans, audio by ear, gliding/grappling animation (not synced).
 
+## 0.3.1: hotfix, the game kept opening at a tiny resolution (2026-10-29)
+Asked for: stop the game resizing itself to the lowest resolution; fix other bugs found on the way; 0.3.1.
+
+Findings in the real game:
+1. The player's `Documents\WB Games\Batman Arkham City GOTY\BmGame\Config\BmEngine.ini` `[SystemSettings]` said
+   `Fullscreen=False ResX=140 ResY=77`; `UserEngine.ini` (the launcher's choice) said 1600x900 fullscreen. The game uses
+   BmEngine.ini, so every start opened a 140x77 window.
+2. Mechanism, reproduced: **the game saves its window's client size as the resolution** (with `Fullscreen=False`) when
+   the window is resized, and writes the settings back on a normal quit. A lab copy shrunk to 154x91 then `exec exit`
+   left `Fullscreen=False ResX=154 ResY=91`. Minimizing (client 0x0) and a `-windowed -ResX` start do not change the
+   saved values; `taskkill /F` writes nothing. The 140x77 most likely came from a lab copy (lab copies run windowed and
+   some were closed with `exec exit`); nothing in the mod changes the resolution.
+3. `setres` is not a command in the shipping game ("Command not recognized"), and **`scale set ResX 800` crashed the
+   game**: never use `scale set` through `exec`.
+
+Fix:
+- `Core/DisplaySettings.cs` (shared with the link): read/write Fullscreen/ResX/ResY in `[SystemSettings]` only, keeping
+  CRLF and every other line; the repair target is the launcher's resolution if usable (>= 640x360), else the
+  desktop's in fullscreen.
+- `Game/DisplayGuard.cs`: at load (skipped when the command line has `-windowed`/`-ResX`, i.e. lab copies, or with
+  `DisplayGuard=0`), a saved size below 640x360 is rewritten in the file, the game window (when windowed) is resized
+  to the repaired size (the game then takes it as its resolution), and `BatCoopLink.exe --fix-display <pid> <ini> WxH
+  fullscreen|windowed` waits for the game to quit and writes the repaired resolution again (the game's own save on
+  quit would otherwise put the windowed size back).
+- Lab: `lab/display_keep.py`; `launch.py` and `ingame.py` save the player's three values before a run and restore
+  them when no copy runs any more.
+- The player's file was put back to 1600x900 fullscreen.
+
+Tests at 0.3.1:
+- Offline 42/42 (new `display_repair`), animcheck PASS, mutation twins 4/4.
+- Real game, started like a player (no `-windowed`) with 154x91 windowed saved: the log said "the game started at
+  154x91 windowed; restoring 1600x900 fullscreen", the window's client area became 1600x900, the helper ran, and after
+  `exec exit` the file said `Fullscreen=True ResX=1600 ResY=900`.
+- `ingame.py` 12/12; the player's resolution was unchanged after that windowed lab run.
+- Not tested: a start that is already fullscreen at a tiny size (the window is left alone there; the toast asks for
+  a restart and the fix is written after quitting).
+
 ## Handoff (start here in a new session)
-- Repo: `multiplayereverything/batman-arkham-city-gofy-coop`, branch `main`, version 0.3.0, protocol `batcoop-3`.
+- Repo: `multiplayereverything/batman-arkham-city-gofy-coop`, branch `main`, version 0.3.1, protocol `batcoop-3`.
 - Game: `F:\SteamLibrary\steamapps\common\Batman Arkham City GOTY`, BmSDK 0.21, dgVoodoo2 installed.
 - Build/deploy: `python -I lab/build.py all`, `python -I lab/deploy.py install` (hot reload; a reload ends the
   co-op room, so re-host). One test copy: `python -I lab/launch.py start host` / `stop`.
@@ -209,6 +246,8 @@ Tests at 0.3.0:
 - Lab bridge research commands: `insp/methods/call/set/find` (reflection on live objects; `obj:<path>|Prop`),
   `anim`, `animloop`, `pvp`, `pvpshow`, `settings`, `combat watch|counter [delay]|log`, `aithug`, `chatlog`, `ui`,
   `view`, `hold`, `handles`/`release`.
+- Lab copies run windowed; `launch.py`/`ingame.py` keep the player's resolution (`lab/display_keep.py show`).
+  Never run `scale set` through `exec` (crash).
 - Open items: real two-player test (user + friend); audio while paused by ear; glide/grapple animation; animated
   puppet spikes on sharp turns; takedown prompt near PVP proxies; longer counter window (make the proxy's attack
   survive while hidden, then let it land natively).
