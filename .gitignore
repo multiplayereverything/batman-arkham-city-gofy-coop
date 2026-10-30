@@ -12,3 +12,7 @@ obj/
 dist/
 lab/out/
 *.user
+link-*.log
+tools/sigdump/bin/
+tools/sigdump/obj/
+tools/sigdump/out/

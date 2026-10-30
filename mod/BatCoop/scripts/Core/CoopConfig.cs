@@ -35,6 +35,26 @@ public sealed class CoopConfig
         return c;
     }
 
+    /// <summary>Sets one key in the ini, keeping every other line (and comments) as it is.</summary>
+    public static void SetInFile(string path, string key, string value)
+    {
+        var lines = File.Exists(path) ? new List<string>(File.ReadAllLines(path)) : new List<string>();
+        bool done = false;
+        for (int i = 0; i < lines.Count; i++)
+        {
+            var t = lines[i].Trim();
+            int eq = t.IndexOf('=');
+            if (eq > 0 && t[0] is not ('#' or ';') && t[..eq].Trim().Equals(key, StringComparison.OrdinalIgnoreCase))
+            {
+                lines[i] = $"{key}={value}";
+                done = true;
+                break;
+            }
+        }
+        if (!done) lines.Add($"{key}={value}");
+        File.WriteAllLines(path, lines);
+    }
+
     public string Str(string key, string def) => _values.TryGetValue(key, out var v) && v.Length > 0 ? v : def;
 
     public int Int(string key, int def) =>
@@ -49,7 +69,7 @@ public sealed class CoopConfig
     public const string Template = """
         # BatCoop settings. Delete a line to use the default.
 
-        # Your name as other players see it. Empty = your Steam name (Steam) or "Batman".
+        # Your name as other players see it. Empty = your Steam name (when Steam is running).
         Name=
 
         # steam  = Steam lobbies through Spacewar (AppID 480); friends join by invite or with F6.
@@ -69,5 +89,23 @@ public sealed class CoopConfig
         # 1 = keep the game running when its window is not focused (the game normally pauses, which also
         # freezes you for the other players).
         RunInBackground=0
+
+        # Chat and host menu keys (Unreal key names: T, Y, F3, F4, ...). Both can also be changed in the host menu.
+        # In a co-op game the chat key is taken by the chat; T is also the game's "secondary group combat move".
+        ChatKey=T
+        MenuKey=F3
+
+        # The host's game settings (also changed in the host menu, which saves them here).
+        # PVP: players can fight each other like thugs (strikes, counters, damage). Off unless the host turns it on.
+        HostPvp=0
+        HostPvpDamage=100
+        HostAllowTeleport=1
+        HostNameTags=1
+        # vote = everyone watching must press skip; host = the host's skip skips for everyone
+        HostCutsceneSkip=vote
+        HostEventFeed=1
+
+        # animated = other players walk, run and fight with the game's own animations; kinematic = 0.2 behaviour
+        PuppetMode=animated
         """;
 }

@@ -24,6 +24,8 @@ public sealed class RemotePlayer(byte id, string name)
     public double LastRecv { get; set; }
     public long StatesReceived { get; set; }
     public double RttMs { get; set; } = -1;
+    /// <summary>This player's pose transitions, waiting to be replayed on its puppet.</summary>
+    public PoseQueue Poses { get; } = new();
 }
 
 public sealed class CoopSession : IDisposable
@@ -42,12 +44,20 @@ public sealed class CoopSession : IDisposable
         NpcHost = new NpcHost(SendGame);
         NpcGuest = new NpcGuest(SendGame);
         Vote = new CutsceneVote(SendGame);
+        Pvp = new PvpState((payload, to) => SendGame(to, true, payload));
+        World.StepCommitted += OnCommitted;
     }
 
     public WorldSync World { get; }
     public NpcHost NpcHost { get; }
     public NpcGuest NpcGuest { get; }
     public CutsceneVote Vote { get; }
+    public PvpState Pvp { get; }
+    /// <summary>Chat and event lines (what the chat box shows).</summary>
+    public ChatLog Feed { get; } = new();
+    /// <summary>The host's game settings; the host changes them with SetHostSettings, guests receive them.</summary>
+    public HostSettings Settings { get; private set; } = new();
+    double _now;
     /// <summary>Set by the game layer (or the lab); null disables that kind of sync.</summary>
     public IWorldPort? WorldPort { get; set; }
     public INpcHostPort? NpcPort { get; set; }
@@ -65,6 +75,8 @@ public sealed class CoopSession : IDisposable
     public IReadOnlyDictionary<byte, RemotePlayer> Remotes => _remotes;
     public List<string> Notices { get; } = [];
     public long StatesSent { get; private set; }
+    /// <summary>Our name as other players see it, once the link has answered (the ini Name, else the Steam name).</summary>
+    public string LocalName { get; private set; } = "";
 
     /// <summary>Raised on the thread that calls Update, for every chat line from a peer.</summary>
     public event Action<RemotePlayer, string>? Chat;
@@ -89,7 +101,43 @@ public sealed class CoopSession : IDisposable
 
     public void Invite() => _link?.Send(Frames.Invite());
 
-    public void SendChat(string text) => SendGame(PeerIds.Everyone, true, GameMessages.Chat(text));
+    public void SendChat(string text)
+    {
+        text = text.Trim();
+        if (text.Length == 0) return;
+        if (text.Length > 200) text = text[..200];
+        SendGame(PeerIds.Everyone, true, GameMessages.Chat(text));
+        Feed.Add(new FeedLine(FeedKind.Chat, LocalName.Length > 0 ? LocalName : "You", text, _now));
+    }
+
+    /// <summary>An event line for everyone (and for us).</summary>
+    public void SendEvent(FeedKind kind, string who, string text)
+    {
+        if (!Settings.EventFeed) return;
+        SendGame(PeerIds.Everyone, true, FeedMessages.Event(kind, who, text));
+        Feed.Add(new FeedLine(kind, who, text, _now));
+    }
+
+    /// <summary>The name of a player in this room (us included).</summary>
+    public string NameOf(byte id) => id == LocalId ? (LocalName.Length > 0 ? LocalName : "You")
+        : _remotes.TryGetValue(id, out var rp) ? rp.Name : $"Player {id + 1}";
+
+    /// <summary>Host: new settings for everyone.</summary>
+    public void SetHostSettings(HostSettings s)
+    {
+        Settings = s;
+        Pvp.Enabled = s.Pvp;
+        if (IsHost) SendGame(PeerIds.Everyone, true, s.Encode());
+    }
+
+    void OnCommitted(IReadOnlyList<WorldEffect> diff, WorldState before, byte credit)
+    {
+        var what = MissionFeed.Describe(diff, before);
+        if (what != null) SendEvent(FeedKind.Mission, NameOf(credit), what);
+    }
+
+    /// <summary>Game payloads from the game layer (animation, PVP, events) to everyone, or to one player.</summary>
+    public void Send(byte[] payload, bool reliable = true, byte to = PeerIds.Everyone) => SendGame(to, reliable, payload);
 
     void SendGame(byte to, bool reliable, byte[] payload)
     {
@@ -106,6 +154,7 @@ public sealed class CoopSession : IDisposable
     public void Update(ICoopWorld world)
     {
         double now = world.Now;
+        _now = now;
         Drain(now);
         if (!InRoom) return;
 
@@ -184,11 +233,17 @@ public sealed class CoopSession : IDisposable
                         _nextWorld = 0;
                         World.HostSendSnapshot(j.Id);
                         NpcHost.SendAllInfo(j.Id);
+                        SendGame(j.Id, true, Settings.Encode());
                     }
                     Notice($"{j.Name} joined");
+                    Feed.Add(new FeedLine(FeedKind.Joined, j.Name, "", now));
                     break;
                 case PeerLeftEvent l:
-                    if (_remotes.Remove(l.Id, out var gone)) Notice($"{gone.Name} left ({l.Reason})");
+                    if (_remotes.Remove(l.Id, out var gone))
+                    {
+                        Notice($"{gone.Name} left ({l.Reason})");
+                        Feed.Add(new FeedLine(FeedKind.Left, gone.Name, "", now));
+                    }
                     if (IsHost) Vote.HostPlayerLeft(l.Id);
                     break;
                 case RecvEvent r:
@@ -196,6 +251,10 @@ public sealed class CoopSession : IDisposable
                     break;
                 case NoticeEvent n:
                     Notice(n.Text);
+                    break;
+                case IdentityEvent idn:
+                    LocalName = idn.Name;
+                    _log($"playing as '{idn.Name}'");
                     break;
                 case LinkLostEvent lost:
                     State = LinkState.Idle;
@@ -234,7 +293,24 @@ public sealed class CoopSession : IDisposable
                     if (rp.Info.Name.Length > 0) rp.Name = rp.Info.Name;
                     break;
                 case GameMsg.Chat:
-                    Chat?.Invoke(rp, r.Str());
+                    var line = r.Str();
+                    Feed.Add(new FeedLine(FeedKind.Chat, rp.Name, line, now));
+                    Chat?.Invoke(rp, line);
+                    break;
+                case GameMsg.Event:
+                    var ev = FeedMessages.DecodeEvent(ref r, now);
+                    if (Settings.EventFeed) Feed.Add(ev);
+                    break;
+                case GameMsg.Settings:
+                    if (from == PeerIds.Host && !IsHost)
+                    {
+                        Settings = HostSettings.Decode(ref r);
+                        Pvp.Enabled = Settings.Pvp;
+                        _log($"host settings: PVP {(Settings.Pvp ? "on" : "off")}, damage {Settings.PvpDamagePercent}%, teleport {Settings.AllowTeleport}, skip {Settings.CutsceneSkip}");
+                    }
+                    break;
+                case GameMsg.Pvp:
+                    Pvp.Receive(from, ref r, now);
                     break;
                 case GameMsg.Ping:
                     SendGame(from, true, GameMessages.Pong(r.F32()));
@@ -254,6 +330,10 @@ public sealed class CoopSession : IDisposable
                     if (IsHost) { if (NpcPort != null) NpcHost.Receive(from, ref r, NpcPort); }
                     else if (from == PeerIds.Host) NpcGuest.Receive(ref r, now);
                     break;
+                case GameMsg.Anim:
+                    var call = PoseCall.Decode(ref r, out var aseq);
+                    rp.Poses.Add(aseq, call, now);
+                    break;
                 case GameMsg.Vote:
                     if (IsHost) Vote.HostReceive(from, ref r);
                     else if (from == PeerIds.Host) Vote.GuestReceive(ref r);
@@ -268,6 +348,7 @@ public sealed class CoopSession : IDisposable
 
     void ResetRoomState()
     {
+        Pvp.Reset();
         World.Reset();
         NpcGuest.Clear();
         Vote.Reset();

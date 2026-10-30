@@ -26,6 +26,9 @@ public sealed class FakeWorld(string name, Func<double, (Vector3 pos, float yaw,
         s.Flags = PlayerFlags.InWorld;
         s.Health = 100;
         s.HealthMax = 100;
+        // Like the game's EMovementSpeed: what a player moving this fast would be doing.
+        float v = new Vector2(vel.X, vel.Y).Length();
+        s.MoveSpeed = v < 30 ? (byte)1 : v < 120 ? (byte)0 : v < 300 ? (byte)1 : v < 650 ? (byte)2 : (byte)3;
         return true;
     }
 

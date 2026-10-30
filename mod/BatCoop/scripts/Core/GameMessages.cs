@@ -15,6 +15,10 @@ public enum GameMsg : byte
     World = 7,       // story and world state (WorldSync)
     Npc = 8,         // host-owned NPCs (NpcSync)
     Vote = 9,        // cutscene vote skip (CutsceneVote)
+    Anim = 10,       // a player's own pose call, replayed on its puppet (AnimSync)
+    Settings = 11,   // reliable, host -> everyone: the host's game settings (HostSettings)
+    Pvp = 12,        // reliable: PVP attacks, hits and counters between players (PvpSync)
+    Event = 13,      // reliable: chat-feed events (mission complete, defeated, died)
 }
 
 [System.Flags]
@@ -52,6 +56,7 @@ public struct PlayerState
     public PlayerFlags Flags;
     public ushort Health;
     public ushort HealthMax;
+    public byte MoveSpeed;   // the game's EMovementSpeed (walk slow, walk, run, sprint) for the puppet's locomotion
 
     public readonly bool InWorld => (Flags & PlayerFlags.InWorld) != 0;
 
@@ -59,7 +64,7 @@ public struct PlayerState
         .U8((byte)GameMsg.PlayerState)
         .U32(Seq).F32((float)Time).F32(Pos.X).F32(Pos.Y).F32(Pos.Z)
         .F32(Yaw).F32(Pitch).F32(Vel.X).F32(Vel.Y).F32(Vel.Z)
-        .U8(Physics).U8((byte)Flags).U16(Health).U16(HealthMax)
+        .U8(Physics).U8((byte)Flags).U16(Health).U16(HealthMax).U8(MoveSpeed)
         .ToArray();
 
     public static PlayerState Decode(ref WireReader r) => new()
@@ -74,6 +79,7 @@ public struct PlayerState
         Flags = (PlayerFlags)r.U8(),
         Health = r.U16(),
         HealthMax = r.U16(),
+        MoveSpeed = r.U8(),
     };
 }
 

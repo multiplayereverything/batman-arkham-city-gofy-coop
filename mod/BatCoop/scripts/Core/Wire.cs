@@ -39,6 +39,8 @@ public sealed class WireWriter
         return this;
     }
 
+    public WireWriter I32(int v) => U32(unchecked((uint)v));
+
     public WireWriter F32(float v)
     {
         Span<byte> b = stackalloc byte[4];
@@ -88,6 +90,7 @@ public ref struct WireReader
     public ushort U16() => BitConverter.ToUInt16(Take(2));
     public uint U32() => BitConverter.ToUInt32(Take(4));
     public ulong U64() => BitConverter.ToUInt64(Take(8));
+    public int I32() => unchecked((int)U32());
     public float F32() => BitConverter.ToSingle(Take(4));
     public string Str() => Encoding.UTF8.GetString(Take(U16()));
     public byte[] Bytes() => Take((int)U32()).ToArray();

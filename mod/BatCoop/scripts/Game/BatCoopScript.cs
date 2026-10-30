@@ -44,6 +44,14 @@ public sealed class BatCoopScript : Script
     public long PausesBlocked;
     double _nextCatalogScan;
     IntPtr _worldPtr;
+    readonly PoseSender _poseSender = new();
+    bool _labAnimLoop;
+    readonly LabCombat _labCombat = new();
+    CoopUi? _ui;
+    PvpBridge? _pvp;
+    HostSettings _hostSettings = new();
+    bool _settingsSent;
+    string _iniPath = "";       // lab: also replay our own transitions on the first remote player's puppet
     bool _traveling;
     double _travelStarted;
 
@@ -62,6 +70,7 @@ public sealed class BatCoopScript : Script
         var dir = Mod.DirectoryPath;
         var ini = Path.Combine(dir, "BatCoop.ini");
         if (!File.Exists(ini)) File.WriteAllText(ini, CoopConfig.Template + Environment.NewLine);
+        _iniPath = ini;
         _cfg = CoopConfig.Load(ini);
 
         Directory.CreateDirectory(Path.Combine(dir, "logs"));
@@ -71,13 +80,19 @@ public sealed class BatCoopScript : Script
 
         _world.PlayerName = _cfg.Str("Name", "");
         _session = new CoopSession(Log);
-        _session.Chat += (rp, text) => Toast($"{rp.Name}: {text}");
+        _hostSettings = HostSettings.FromIni(_cfg);
+        _pvp = new PvpBridge(Log);
+        _session.Pvp.OutcomeReceived += r => _pvp.OnOutcome(_session, r);
+        _session.Pvp.DefeatedReceived += (victim, by) => Log($"PVP: {_session.NameOf(by)} defeated {_session.NameOf(victim)}");
+        _ui = new CoopUi(() => _session, () => _world.Now, SaveIni, ApplyHostSettings,
+                         _cfg.Str("ChatKey", "T"), _cfg.Str("MenuKey", "F3"));
         _worldPort = new GameWorldPort(Log);
         _binder = new NpcGuestBinder(Log);
         if (_cfg.Bool("WorldSync", true)) _session.WorldPort = _worldPort;
         if (_cfg.Bool("NpcSync", true)) _session.NpcPort = _npcHost;
         _session.Vote.SkipNow += DoSkip;
-        _puppets = new PuppetManager(Log) { MirrorPhysics = _cfg.Bool("PuppetMirrorPhysics", false) };
+        _puppets = new PuppetManager(Log);
+        if (_cfg.Str("PuppetMode", "animated").Equals("kinematic", StringComparison.OrdinalIgnoreCase)) _puppets.Mode = PuppetMode.Kinematic;
         if (_cfg.Str("Puppet", "player").Equals("none", StringComparison.OrdinalIgnoreCase)) _puppets.Kind = PuppetKind.None;
 
         int labPort = _cfg.Int("LabPort", 0);
@@ -110,6 +125,7 @@ public sealed class BatCoopScript : Script
     public override void OnUnload()
     {
         // Hot reload or shutdown: leave nothing behind in the world.
+        _pvp?.DestroyAll();
         _puppets?.DestroyAll();
         if (_session != null) _binder?.ReleaseAll(_session.NpcGuest);
         _session?.Dispose();
@@ -123,6 +139,25 @@ public sealed class BatCoopScript : Script
     // ---------- used by SyncHooks ----------
 
     internal GameWorldPort World => _worldPort!;
+    internal CoopSession? Session => _session;
+    internal CoopUi? Ui => _ui;
+    internal PvpBridge? Pvp => _pvp;
+    internal double Now => _world.Now;
+
+    /// <summary>Host: new settings from the host menu, for everyone, and kept in BatCoop.ini for next time.</summary>
+    void ApplyHostSettings(HostSettings s)
+    {
+        if (_session is not { IsHost: true }) return;
+        _hostSettings = s;
+        _session.SetHostSettings(s);
+        foreach (var (k, v) in s.ToIni()) SaveIni(k, v);
+        Log($"host settings changed: PVP {(s.Pvp ? "on" : "off")}, damage {s.PvpDamagePercent}%");
+    }
+
+    void SaveIni(string key, string value)
+    {
+        try { CoopConfig.SetInFile(_iniPath, key, value); } catch (Exception e) { Log("could not save " + key + ": " + e.Message); }
+    }
     public bool IsHostNow => _session?.IsHost == true;
 
     /// <summary>On a guest in a co-op game, shared story writes from our own scripts go to the host instead.</summary>
@@ -177,6 +212,7 @@ public sealed class BatCoopScript : Script
             if (_worldPtr != IntPtr.Zero) Log("world changed: forgetting actors from the old world");
             _worldPtr = wi;
             _puppets?.Forget();
+            _pvp?.Forget();
             if (_session != null) _binder?.ForgetAll(_session.NpcGuest);
             if (_session is { InRoom: true, IsHost: false }) _session.World.Resync();
             _traveling = false;
@@ -191,19 +227,23 @@ public sealed class BatCoopScript : Script
         double now = _world.Now;
         if (!s.InRoom)
         {
-            if (_wasInRoom) { _binder?.ReleaseAll(s.NpcGuest); Log("left the room: NPCs handed back to local AI"); }
+            if (_wasInRoom) { _binder?.ReleaseAll(s.NpcGuest); _ui?.CloseAll(); Log("left the room: NPCs handed back to local AI"); }
             _wasInRoom = false;
+            _settingsSent = false;
             return;
         }
         _wasInRoom = true;
+        // The host's saved settings go to everyone when the room opens (and to each newcomer from the session).
+        if (s.IsHost && !_settingsSent) { _settingsSent = true; s.SetHostSettings(_hostSettings); }
+        s.Vote.HostDecides = s.Settings.CutsceneSkip == SkipMode.HostOnly;
 
-        // No pause in multiplayer: the world keeps running behind menus and when the window loses focus.
+        // No pause in multiplayer: the world keeps running behind menus and when the window loses focus. The
+        // SetPause redirect refuses every pause; WorldInfo.Pauser is never cleared by hand, because the engine's
+        // next SetPause(false) then crashes the game (its own pauser list is still set).
         try
         {
             var engine = BmSDK.Framework.Game.GetEngine();
             if (engine.bPauseOnLossOfFocus) engine.bPauseOnLossOfFocus = false;
-            var wi = BmSDK.Framework.Game.GetWorldInfo();
-            if (wi.Pauser != null) { wi.Pauser = null; PausesBlocked++; }
         }
         catch { }
 
@@ -243,12 +283,27 @@ public sealed class BatCoopScript : Script
                 _traveling = true;
                 _travelStarted = now;
                 _puppets?.Forget();
+                _pvp?.Forget();
                 _binder?.ForgetAll(s.NpcGuest);
                 try { BmSDK.Framework.Game.GetPlayerController().ConsoleCommand(cmd, false); }
                 catch (Exception e) { Log("follow failed: " + e.Message); }
                 return;
             }
         }
+    }
+
+    /// <summary>Sends each new transition of our own pawn (a strike, a counter, a stance change) to everyone.</summary>
+    void PoseTick()
+    {
+        var s = _session!;
+        if (!s.InRoom) { _poseSender.Reset(); return; }
+        var pawn = LocalWorld.TryGetPawn();
+        if (pawn == null) return;
+        PoseCall? call = null;
+        var msg = _poseSender.Tick(AnimBridge.TransitionId(pawn), () => (call = AnimBridge.Read(pawn)).Value, _world.Now);
+        if (msg == null) return;
+        s.Send(msg);
+        if (_labAnimLoop && call is { } c && s.Remotes.Values.FirstOrDefault() is { } rp) rp.Poses.Add(0, c, _world.Now);
     }
 
     static bool IsInCutscene()
@@ -282,6 +337,7 @@ public sealed class BatCoopScript : Script
         Log($"entered world '{SafeMapName()}'");
         ApplyRunInBackground();
         _puppets?.Forget(); // actors from the previous world are gone with it
+        _pvp?.Forget();
         if (_session != null) _binder?.ForgetAll(_session.NpcGuest);
         _worldPort?.OnWorldLoaded();
     }
@@ -407,7 +463,10 @@ public sealed class BatCoopScript : Script
             case Keys.F5: Host(Transport); break;
             case Keys.F6: Join(Transport, JoinTarget()); break;
             case Keys.F7: _session.Leave(); _puppets?.DestroyAll(); Toast("Left the game"); break;
-            case Keys.F8: TeleportToFriend(); break;
+            case Keys.F8:
+                if (_session.InRoom && !_session.Settings.AllowTeleport) Toast("The host turned off 'go to friend'");
+                else TeleportToFriend();
+                break;
             case Keys.F9: _hudVisible = !_hudVisible; break;
             case Keys.F10:
                 if (_session.IsHost && _session.Lobby.Length > 0)
@@ -432,10 +491,14 @@ public sealed class BatCoopScript : Script
             _world.Refresh();
             _session.LocalWorld = _world.WorldName;
             LabTick();
+            _labCombat.Tick(_world.Now);
+            if (_session.LocalName.Length > 0) _world.PlayerName = _session.LocalName;
             _session.Update(_world);
             RoomTick();
+            PoseTick();
             if (_traveling) { ServeBridge(); return; } // a level load started this frame: spawn and move nothing
             _puppets?.Update(_session, _world.WorldName, _world.Now);
+            if (_puppets != null) _pvp?.Tick(_session, _puppets, _world.Now);
             ProbeTick();
             ServeBridge();
         }
@@ -513,21 +576,18 @@ public sealed class BatCoopScript : Script
         try { Instance?.DrawHud(self); } catch { }
     }
 
-    /// <summary>The HUD still renders while the world is paused (and OnTick does not run). In a co-op room, undo any
-    /// pause that got through, and keep answering the lab bridge so a paused game never looks hung.</summary>
+    /// <summary>The HUD still renders while the world is paused (and OnTick does not run): keep answering the lab
+    /// bridge so a paused game never looks hung. A pause is not undone from here: calling SetPause(false) inside
+    /// a render crashed the game, and clearing WorldInfo.Pauser by hand made the next unpause crash it.</summary>
     void WhilePausedTick()
     {
         bool paused;
         try { paused = BmSDK.Framework.Game.GetWorldInfo().Pauser != null; } catch { return; }
         if (!paused) return;
-        if (_session is { InRoom: true })
-        {
-            BmSDK.Framework.Game.GetWorldInfo().Pauser = null;
-            PausesBlocked++;
-            Log("pause undone (co-op game)");
-        }
-        ServeBridge();
+        if (_session is { InRoom: true } && !_pauseLogged) { _pauseLogged = true; Log("the world is paused in a co-op game (not by a script pause)"); }
+        ServeBridge(whileRendering: true);
     }
+    bool _pauseLogged;
 
     void DrawHud(HUD hud)
     {
@@ -547,6 +607,7 @@ public sealed class BatCoopScript : Script
         var head = _session.InRoom ? (_session.IsHost ? "HOST" : $"PLAYER {_session.LocalId + 1}") : _session.State.ToString().ToUpperInvariant();
         Text($"BatCoop {Versions.Mod}  [{head}]  {_session.StatusText}", 255, 220, 90);
         if (!_session.InRoom) Text("F5 Host   F6 Join   F7 Leave   F8 Go to friend   F10 Invite   F9 Hide", 200, 200, 200);
+        else Text($"{_ui?.ChatKey} Chat   {_ui?.MenuKey} {(_session.IsHost ? "Host menu" : "Game settings")}{(_session.Settings.Pvp ? "   PVP ON" : "")}", 200, 200, 200);
 
         var pawn = LocalWorld.TryGetPawn();
         foreach (var rp in _session.Remotes.Values)
@@ -569,7 +630,8 @@ public sealed class BatCoopScript : Script
             if (_session.Vote.Active)
                 Text($"  Cutscene: {_session.Vote.Votes}/{_session.Vote.Needed} voted to skip{(_session.Vote.LocalVoted ? "" : " - press skip to vote")}", 255, 220, 90);
         }
-        DrawNameTags(hud, c);
+        if (!_session.InRoom || _session.Settings.NameTags) DrawNameTags(hud, c);
+        if (_session.InRoom) _ui?.Draw(c, _session);
 
         double now = _world.Now;
         _toasts.RemoveAll(t => t.until < now);
@@ -600,12 +662,21 @@ public sealed class BatCoopScript : Script
 
     // ---------- lab bridge ----------
 
-    void ServeBridge()
+    // Answered from the HUD render while the world is paused. Calling into menus or the pause state from inside
+    // a render crashed the game (a native exception on ClosePauseMovie), so only reads run there.
+    static readonly HashSet<string> SafeWhileRendering = ["ping", "state", "paused", "hooks", "insp", "methods", "find", "vote", "world", "npcs"];
+
+    void ServeBridge(bool whileRendering = false)
     {
         if (_bridge == null) return;
         while (_bridge.TryTake(out var req))
         {
             string answer;
+            if (whileRendering && !SafeWhileRendering.Contains(req.Line.Split(' ')[0]))
+            {
+                req.Reply(LabBridge.Json(("ok", false), ("error", "the game is paused: only reads and 'unpause' are served")));
+                continue;
+            }
             try { answer = Command(req.Line); }
             catch (Exception e) { answer = LabBridge.Json(("ok", false), ("error", e.GetType().Name + ": " + e.Message)); }
             req.Reply(answer);
@@ -642,10 +713,34 @@ public sealed class BatCoopScript : Script
                 _labWalk = (p.Location - new Vector3(radius, 0, 0), radius, _world.Now, _world.Now + secs);
                 return Ok();
             case "puppets":
+                // puppets player|none [animated|kinematic]
                 _puppets!.Kind = parts.Length > 1 && parts[1] == "none" ? PuppetKind.None : PuppetKind.Player;
-                _puppets.MirrorPhysics = parts.Length > 2 && parts[2] == "mirror";
+                if (parts.Length > 2) _puppets.Mode = parts[2] == "kinematic" ? PuppetMode.Kinematic : PuppetMode.Animated;
                 _puppets.DestroyAll();
-                return Ok(("kind", _puppets.Kind.ToString()), ("mirror", _puppets.MirrorPhysics));
+                return Ok(("kind", _puppets.Kind.ToString()), ("mode", _puppets.Mode.ToString()));
+            case "animloop":
+                _labAnimLoop = parts.Length < 2 || parts[1] != "off";
+                return Ok(("loop", _labAnimLoop));
+            case "anim":
+                // Lab: what our pawn plays and sends, and what each puppet replays.
+                var lp = LocalWorld.TryGetPawn();
+                var (lclip, ltime) = lp != null ? AnimBridge.Playing(lp) : ("", 0f);
+                var pups = _puppets!.All.Values.Select(pp =>
+                {
+                    var (pc2, pt2) = pp.Pawn.IsValid ? AnimBridge.Playing(pp.Pawn) : ("", 0f);
+                    var q = s.Remotes.TryGetValue(pp.Id, out var rr) ? rr.Poses : null;
+                    return new LabBridge.RawJson(LabBridge.Json(("id", (int)pp.Id), ("kinematic", pp.Kinematic), ("moving", pp.Moving),
+                        ("speed", (int)pp.Speed), ("physics", pp.Pawn.IsValid ? pp.Pawn.Physics.ToString() : ""),
+                        ("received", q?.Received ?? 0), ("replayed", pp.Replayed), ("failures", pp.ReplayFailures), ("error", pp.LastReplayError),
+                        ("last", q?.Last?.ToString() ?? ""), ("playing", pc2), ("time", pt2),
+                        ("move_speed", pp.Pawn.IsValid ? pp.Pawn.MovementSpeed.ToString() : ""),
+                        // How far the puppet is from where the interpolation says it should be (sideways and height).
+                        ("err_xy", pp.HasSample && pp.Pawn.IsValid ? Vector2.Distance(new Vector2(pp.Pawn.Location.X, pp.Pawn.Location.Y), new Vector2(pp.Last.Pos.X, pp.Last.Pos.Y)) : -1f),
+                        ("pulls_refused", pp.PullsRefused),
+                        ("err_z", pp.HasSample && pp.Pawn.IsValid ? pp.Pawn.Location.Z - pp.Last.Pos.Z : 0f)));
+                }).ToList();
+                return Ok(("sent", _poseSender.Sent), ("last_sent", _poseSender.Last?.ToString() ?? ""), ("transition_id", lp != null ? AnimBridge.TransitionId(lp) : 0),
+                          ("playing", lclip), ("time", ltime), ("move_speed", lp?.MovementSpeed.ToString()), ("puppets", pups));
             case "hooks":
                 return Ok(("calls", new LabBridge.RawJson(LabBridge.Json(SyncHooks.Calls.Select(kv => (kv.Key, (object?)kv.Value)).ToArray()))));
             case "flagnames":
@@ -707,6 +802,58 @@ public sealed class BatCoopScript : Script
                 var thug = new RPawnVillainThug(me.Location + new Vector3(250, 0, 0), me.Rotation);
                 if (thugChar != null) thug.InitCharacter(thugChar);
                 return Ok(("key", thug.GetPathName(null)), ("char", thugChar?.GetPathName(null)));
+            case "pvp":
+                return Ok(("pvp", _pvp!.LabState(s)), ("hooks_blocked", PvpHooks.BlockedAttacks), ("target_overrides", PvpHooks.TargetOverrides));
+            case "pvpshow":
+                _pvp!.SetLabVisible(parts.Length < 2 || parts[1] != "off");
+                return Ok(("visible", _pvp.LabVisible));
+            case "settings":
+                // settings [pvp|damage|teleport|tags|skip|feed <value>]: the host menu's settings, as the host.
+                if (parts.Length > 2)
+                {
+                    var hs = s.Settings;
+                    bool on = parts[2] is "on" or "1" or "true" or "host";
+                    hs = parts[1] switch
+                    {
+                        "pvp" => hs with { Pvp = on },
+                        "damage" => hs with { PvpDamagePercent = int.Parse(parts[2]) },
+                        "teleport" => hs with { AllowTeleport = on },
+                        "tags" => hs with { NameTags = on },
+                        "skip" => hs with { CutsceneSkip = on ? SkipMode.HostOnly : SkipMode.Vote },
+                        "feed" => hs with { EventFeed = on },
+                        _ => throw new ArgumentException("unknown setting " + parts[1]),
+                    };
+                    ApplyHostSettings(hs);
+                }
+                var st = s.Settings;
+                return Ok(("pvp", st.Pvp), ("damage", st.PvpDamagePercent), ("teleport", st.AllowTeleport), ("tags", st.NameTags),
+                          ("skip", st.CutsceneSkip.ToString()), ("feed", st.EventFeed), ("is_host", s.IsHost));
+            case "chatlog":
+                return Ok(("lines", s.Feed.Lines.Select(l => FeedMessages.Format(l)).ToList()));
+            case "ui":
+                return Ok(("chat_open", _ui!.ChatOpen), ("menu_open", _ui.MenuOpen), ("chat_key", _ui.ChatKey), ("menu_key", _ui.MenuKey),
+                          ("sent", _ui.LinesSent), ("keys_seen", InputHooks.Keys), ("chars_seen", InputHooks.Chars), ("swallowed", InputHooks.Swallowed));
+            case "combat":
+                // combat watch|counter|log [clear]: villain moves near us; "counter" presses counter at the next icon.
+                if (parts.Length > 1 && parts[1] == "watch") _labCombat.Watch = true;
+                if (parts.Length > 1 && parts[1] == "counter")
+                {
+                    _labCombat.Watch = true;
+                    _labCombat.AutoCounter = true;
+                    if (parts.Length > 2 && double.TryParse(parts[2], System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var cd)) _labCombat.CounterDelay = cd;
+                }
+                var clog = _labCombat.Log.ToList();
+                if (parts.Length > 2 && parts[2] == "clear") _labCombat.Log.Clear();
+                return Ok(("log", clog.TakeLast(40).ToList()), ("icons", _labCombat.CounterIcons), ("counters", _labCombat.CountersPressed), ("armed", _labCombat.AutoCounter));
+            case "aithug":
+                // Lab: a thug with its AI, created the way the game creates its own (RCharacter.StaticCreatePawn).
+                var me2 = LocalWorld.TryGetPawn() ?? throw new InvalidOperationException("no pawn");
+                if (parts.Length > 2) BmSDK.Framework.Game.LoadPackage(parts[2]);
+                var charCls = BmSDK.Framework.Game.FindObject<Class>(parts.Length > 1 ? parts[1] : "BmScript.RCharacter_JokerThug1");
+                var thugCls = BmSDK.Framework.Game.FindObject<Class>("BmGame.RPawnVillainThug");
+                var dir2 = new Rotator(0, me2.Rotation.Yaw, 0).ToDirection() with { Z = 0 };
+                var ai = RCharacter.StaticCreatePawn(me2.Location + dir2 * 300, new Rotator(0, me2.Rotation.Yaw + 180, 0), null!, thugCls!, charCls!, true, FName.None, FName.None);
+                return Ok(("key", ai?.GetPathName(null)), ("controller", ai?.Controller?.Class.Name.ToString()), ("health", ai?.Health ?? -1));
             case "hit":
                 // Lab: hit the nearest NPC the way the game does (TakeDamage), so the co-op hooks route it.
                 var hp = LocalWorld.TryGetPawn() ?? throw new InvalidOperationException("no pawn");
@@ -721,8 +868,8 @@ public sealed class BatCoopScript : Script
                 BmSDK.Framework.Game.GetPlayerController().ConsoleCommand("pause", false);
                 return Ok(("paused_right_after", BmSDK.Framework.Game.GetWorldInfo().Pauser != null), ("blocked_total", PausesBlocked));
             case "unpause":
-                BmSDK.Framework.Game.GetWorldInfo().Pauser = null;
-                return Ok();
+                // The engine's own unpause (never WorldInfo.Pauser = null: the next unpause would crash the game).
+                return Ok(("result", BmSDK.Framework.Game.GetPlayerController().SetPause(false, IntPtr.Zero)));
             case "paused":
                 return Ok(("paused", BmSDK.Framework.Game.GetWorldInfo().Pauser != null), ("time", BmSDK.Framework.Game.GetWorldInfo().TimeSeconds), ("blocked_total", PausesBlocked));
             case "watch":
@@ -734,6 +881,45 @@ public sealed class BatCoopScript : Script
                 return Ok(("votes", _session!.Vote.Votes), ("needed", _session.Vote.Needed), ("skips_done", _session.Vote.SkipsDone));
             case "vote":
                 return Ok(("votes", _session!.Vote.Votes), ("needed", _session.Vote.Needed), ("active", _session.Vote.Active), ("skips_done", _session.Vote.SkipsDone), ("cinematic", IsInCutscene()));
+            case "insp":
+                // insp <expr> [depth] [filter]: read a live object by reflection (lab research).
+                return Ok(("value", new LabBridge.RawJson(LabInspect.Describe(LabInspect.Eval(parts[1], LabRoot),
+                    parts.Length > 2 ? int.Parse(parts[2]) : 1, parts.Length > 3 ? parts[3] : ""))));
+            case "methods":
+                return Ok(("methods", LabInspect.Methods(LabInspect.Eval(parts[1], LabRoot) ?? throw new NullReferenceException(), parts.Length > 2 ? parts[2] : "")));
+            case "call":
+                // call <expr> <Method> [args...]
+                var obj = LabInspect.Eval(parts[1], LabRoot) ?? throw new NullReferenceException(parts[1]);
+                var ret = LabInspect.Invoke(obj, parts[2], parts[3..]);
+                return Ok(("result", new LabBridge.RawJson(LabInspect.Describe(ret, 1))));
+            case "set":
+                LabInspect.Set(LabInspect.Eval(parts[1], LabRoot) ?? throw new NullReferenceException(parts[1]), parts[2], string.Join(' ', parts[3..]));
+                return Ok();
+            case "find":
+                // find <Type> [count] [name filter]
+                var found = LabInspect.Find(parts[1], parts.Length > 3 ? 100000 : parts.Length > 2 ? int.Parse(parts[2]) : 20);
+                if (parts.Length > 3) found = found.Where(o => o is GameObject g && g.GetPathName(null).Contains(parts[3], StringComparison.OrdinalIgnoreCase)).Take(int.Parse(parts[2])).ToList();
+                return Ok(("objects", new LabBridge.RawJson(LabInspect.Describe(found, 0))));
+            case "view":
+                // Lab: the camera, and a floor point in front of it at the player's height (for placing actors in shot).
+                BmSDK.Framework.Game.GetPlayerController().GetPlayerViewPoint(out var camLoc, out var camRot);
+                var fwd = camRot.ToDirection() with { Z = 0 };
+                fwd = Vector3.Normalize(fwd);
+                var right = new Vector3(-fwd.Y, fwd.X, 0);
+                var feet = LocalWorld.TryGetPawn()?.Location ?? camLoc;
+                float ahead = parts.Length > 1 ? F(1) : 400;
+                return Ok(("cam", camLoc), ("fwd", fwd), ("right", right), ("spot", feet + fwd * ahead));
+            case "hold":
+                _puppets!.LabHold = parts.Length < 2 || parts[1] != "off";
+                return Ok(("hold", _puppets.LabHold));
+            case "handles":
+                // Lab: named single-instance objects this game process holds (filter optional).
+                var like2 = parts.Length > 1 ? parts[1] : "";
+                return Ok(("handles", LabInstances.List().Where(n => n.Name.Contains(like2, StringComparison.OrdinalIgnoreCase))
+                    .Select(n => new LabBridge.RawJson(LabBridge.Json(("h", n.Handle), ("type", n.Type), ("name", n.Name)))).ToList()));
+            case "release":
+                // Lab: close our own handle to a named object so a second copy can start on this PC.
+                return Ok(("closed", LabInstances.Release(parts[1])));
             case "probe":
                 _probe?.Dispose();
                 _probe = parts.Length > 2 ? new ProbeWriter(parts[1], parts[2]) : null;
@@ -741,6 +927,19 @@ public sealed class BatCoopScript : Script
             default:
                 return LabBridge.Json(("ok", false), ("error", "unknown command " + parts[0]));
         }
+    }
+
+    /// <summary>Extra roots for lab expressions: the first puppet, the nearest live NPC.</summary>
+    object? LabRoot(string name)
+    {
+        var me = LocalWorld.TryGetPawn()?.Location ?? Vector3.Zero;
+        return name switch
+        {
+            "puppet" => _puppets?.All.Values.FirstOrDefault()?.Pawn,
+            "console" => BmSDK.Framework.Game.GetConsole(),
+            "npc" => BmSDK.Framework.Game.FindObjects<RBMPawnAI>().Where(NpcHostPort.IsLive).OrderBy(n => Vector3.Distance(n.Location, me)).FirstOrDefault(),
+            _ => throw new ArgumentException("unknown root " + name),
+        };
     }
 
     string StateJson()

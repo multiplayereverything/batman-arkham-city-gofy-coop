@@ -78,6 +78,7 @@ public sealed class LocalWorld : ICoopWorld
         s.Flags = flags;
         s.Health = (ushort)Math.Clamp(pawn.Health, 0, ushort.MaxValue);
         s.HealthMax = (ushort)Math.Clamp(pawn.HealthMax, 0, ushort.MaxValue);
+        s.MoveSpeed = (byte)pawn.MovementSpeed;
         return true;
     }
 }

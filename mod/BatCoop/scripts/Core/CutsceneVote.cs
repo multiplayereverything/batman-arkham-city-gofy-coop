@@ -30,6 +30,8 @@ public sealed class CutsceneVote
 
     /// <summary>Raised on every machine when the vote passes; the game layer then skips its cutscene once.</summary>
     public event Action? SkipNow;
+    /// <summary>Host setting: the host's own skip skips for everyone (no vote needed).</summary>
+    public bool HostDecides;
 
     public void Reset()
     {
@@ -86,7 +88,7 @@ public sealed class CutsceneVote
         int needed = watchers.Count;
         int votes = watchers.Count(_votes.Contains);
         if (needed == 0) { _votes.Clear(); }
-        if (needed > 0 && votes >= needed)
+        if (needed > 0 && (votes >= needed || (HostDecides && _votes.Contains(PeerIds.Host))))
         {
             uint round = _round++;
             _votes.Clear();

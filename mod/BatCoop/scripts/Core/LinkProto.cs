@@ -12,9 +12,9 @@ namespace BatCoop.Core;
 
 public static class Versions
 {
-    public const string Mod = "0.2.0";
+    public const string Mod = "0.3.0";
     // Bump when anything on the wire changes; peers with a different value are refused at join.
-    public const string Protocol = "batcoop-2";
+    public const string Protocol = "batcoop-3";
     public const int DefaultLinkPort = 27960;
     public const int DefaultDirectPort = 27961;
     public const int MaxFrame = 4 * 1024 * 1024;
@@ -43,6 +43,7 @@ public enum LinkToMod : byte
     PeerLeft = 103,   // u8 id, str reason
     Recv = 104,       // u8 from, bytes payload
     Notice = 105,     // str text (one-off message for the HUD)
+    Identity = 106,   // str name: the name other players see (the ini Name, else the Steam name)
 }
 
 /// <summary>Envelopes between link processes.</summary>
@@ -139,4 +140,7 @@ public static class Frames
 
     public static byte[] Notice(string text) =>
         new WireWriter().U8((byte)LinkToMod.Notice).Str(text).ToArray();
+
+    public static byte[] Identity(string name) =>
+        new WireWriter().U8((byte)LinkToMod.Identity).Str(name).ToArray();
 }

@@ -42,6 +42,7 @@ public sealed class WorldState
     public readonly SortedDictionary<string, WorldEffect> Values = new(StringComparer.Ordinal);
 
     public void Set(in WorldEffect e) => Values[e.Key] = e;
+    public bool TryGet(string key, out WorldEffect e) => Values.TryGetValue(key, out e);
 
     public WorldState Clone()
     {
@@ -153,19 +154,30 @@ public sealed class WorldSync
     /// <summary>Host: read the world and commit what changed since the last commit.</summary>
     public void HostTick(IWorldPort port, double now)
     {
+        _now = now;
         if (now < _nextObserve) return;
         _nextObserve = now + ObserveEvery;
         var cur = port.Read();
         if (cur == null) return;
         var diff = cur.DiffFrom(_committed);
         if (diff.Count == 0) return;
+        var before = _committed;
         _committed = cur;
         _seq++;
         _hostLog.Add((_seq, diff));
         if (_hostLog.Count > 256) _hostLog.RemoveAt(0);
         TxnsCommitted++;
         _send(PeerIds.Everyone, true, EncodeTxn(_seq, diff));
+        // Credit the change to the guest whose intent the host applied just before, else to the host.
+        byte credit = now - _lastIntentAt < 3 ? _lastIntentFrom : PeerIds.Host;
+        StepCommitted?.Invoke(diff, before, credit);
     }
+
+    /// <summary>Host: raised after each commit with the changes, the state before them, and who caused them.</summary>
+    public event Action<IReadOnlyList<WorldEffect>, WorldState, byte>? StepCommitted;
+    byte _lastIntentFrom = PeerIds.Host;
+    double _lastIntentAt = double.NegativeInfinity;
+    double _now;
 
     /// <summary>Host: a new player joined (or asked); give them the whole state.</summary>
     public void HostSendSnapshot(byte to) => _send(to, true, EncodeSnapshot(_seq, _committed));
@@ -180,6 +192,8 @@ public sealed class WorldSync
                 Applying = false;
                 port.Apply(e); // through the game's own path: the host's scripts react, and the next HostTick commits it
                 IntentsApplied++;
+                _lastIntentFrom = from;
+                _lastIntentAt = _now;
                 _log($"intent from player {from}: {e.Key}={(e.Kind == WorldValueKind.Str ? e.Str : e.Int)}");
                 _nextObserve = 0; // commit promptly so the requester sees it soon
                 break;

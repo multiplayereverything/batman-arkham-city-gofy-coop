@@ -177,6 +177,9 @@ def main():
         "SteamAppId": "200260",
         "SteamGameId": "200260",
         "BATCOOP_LABPORT": str(LAB_PORT),
+        # This lab measures the network path against a bot walking a flat, made-up circle: compare it with
+        # 0.2's snapped puppets. Animated puppets walk the real floor instead; lab/track_check.py measures them.
+        "BATCOOP_PUPPETMODE": "kinematic",
         "BATCOOP_LABENTERWORLD": "1",
         "BATCOOP_RUNINBACKGROUND": "1",
         "BATCOOP_TRANSPORT": "direct",

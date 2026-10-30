@@ -18,6 +18,7 @@ public sealed class Hub : IDisposable
     readonly Action<byte[]> _toMod;
     readonly Action<string> _log;
     readonly Func<TransportKind, ITransport> _makeTransport;
+    readonly Func<string>? _steamName;
     readonly Dictionary<ulong, Guest> _guests = [];   // host side, by transport peer
     readonly Dictionary<byte, string> _names = [];    // guest side: everyone in the room except us
     ITransport? _t;
@@ -37,8 +38,11 @@ public sealed class Hub : IDisposable
     public LinkState State => _state;
     public string ModName => _name;
 
-    public Hub(Action<byte[]> toMod, Action<string> log, Func<TransportKind, ITransport> makeTransport)
+    /// <param name="steamName">The Steam persona name, or "" when Steam is not available; used when the
+    /// player left Name empty in BatCoop.ini.</param>
+    public Hub(Action<byte[]> toMod, Action<string> log, Func<TransportKind, ITransport> makeTransport, Func<string>? steamName = null)
     {
+        _steamName = steamName;
         _toMod = toMod;
         _log = log;
         _makeTransport = makeTransport;
@@ -63,13 +67,17 @@ public sealed class Hub : IDisposable
             case ModToLink.Hello:
                 var modVer = r.Str();
                 var proto = r.Str();
-                _name = Clean(r.Str());
+                var asked = r.Str().Trim();
+                string steam = "";
+                if (asked.Length == 0) { try { steam = _steamName?.Invoke() ?? ""; } catch (Exception e) { _log("steam name: " + e.Message); } }
+                _name = Clean(asked.Length > 0 ? asked : steam);
                 if (proto != Versions.Protocol)
                 {
                     SetState(LinkState.Ended, $"BatCoopLink speaks {Versions.Protocol} but the mod speaks {proto}: reinstall BatCoop");
                     return;
                 }
-                _log($"mod {modVer} says hello as '{_name}'");
+                _log($"mod {modVer} says hello as '{_name}'{(asked.Length == 0 ? (steam.Length > 0 ? " (Steam name)" : " (no name set, Steam not available)") : "")}");
+                _toMod(Frames.Identity(_name));
                 _toMod(Frames.Status(_state, _myId, _state == LinkState.Idle ? "Ready" : "Reattached", _lobby));
                 break;
             case ModToLink.Host:

@@ -69,7 +69,7 @@ Journal. Facts first, then decisions, then what failed and why.
 6. `RHUD.PostRender` redirect + `Canvas.DrawText` works for the overlay; `Canvas.Project` works for name tags.
 7. Map name of the open world from `WorldInfo.GetMapName(false)` is `OW` (not `batentry`).
 
-## Next
+## Next (0.1 notes)
 See the end of the file for the running status.
 
 ## Status at 0.1.0 (2026-10-26)
@@ -114,3 +114,101 @@ Findings in the real game (all reproduced at least twice):
 
 Two copies of the game do not fit in memory on this PC (one copy 1.4 GB, 1.5 GB free with it running), so the in-game
 sync lab plays one real copy against a bot in each role (lab/ingame_sync.py): 17/17 PASS. Real two-game sessions: untested.
+
+## 0.3.0: animation sync, PVP, chat, host menu, Steam names (2026-10-29)
+Asked for: animation sync, pause keeps the world and audio running, Steam names instead of "Player", a host menu
+with a PVP toggle (thug-like fights with counters and damage), a chat on T with mission/defeat/death lines and a
+rebindable key, test everything, 0.3.0.
+
+Findings in the real game (one copy unless noted):
+1. **Two copies on one PC still do not run**, now for a different reason: memory is fine (15.7 GB, 7.4 GB free
+   with one copy), and the game's single-instance mutex (`\Sessions\1\BaseNamedObjects\6c6a0267-cdb5-4cf2-ae78-7f29002f212d`)
+   can be released from inside the first copy (lab `release`, own process only). The second copy still exits with
+   code 0 before BmSDK loads: the Steam wrapper refuses a second running instance. Not pursued further (it would mean
+   touching DRM). Two-player tests stay one real game + a bot; a real two-PC test is still owed.
+2. **Steam name bug:** the link fell back to "Player" when `Name=` was empty and never used the persona name it read.
+   Now the link starts Steam (as Spacewar) for the name on any transport and reports it back (`LinkToMod.Identity`).
+3. **Pause:** in a room the pause menu opens and the world keeps running (TimeSeconds advances); `SetPause` is refused
+   so the pause post-process and the pause path never start. No menu audio hook fires (`RGFxMovie.SetGlobalAudioState`,
+   `SetAudioState`, `GameMovieSetPauseState`, `PostAudioEvent`, `StartFlashAudioEvent`, `SetAudioFade` all redirected
+   and counted: 0 calls). Audio not measurable here: Windows reports the game's session silent even unpaused while
+   the window is unfocused (lab/AudioMeter.ps1). **Unverified by ear.**
+4. **Crash found and fixed:** `WorldInfo.Pauser = null` by hand (0.2's fallback in RoomTick/PostRender) leaves the
+   engine's pauser list set; the next `SetPause(false)` (closing the pause menu) crashes the game (SEH in BmSDK's
+   loader). Calling `ClosePauseMovie`/`SetPause(false)` from inside the HUD render also crashed. 0.3 never clears the
+   pauser by hand; the lab bridge serves only reads while paused.
+5. **Animation:** the player AnimTree is one `RAnimNode_Pose` driven by a pose description (`RAnimNode_Pose.FPoseDescription`:
+   movement/weapon/idle stance, transition type/name/target/clip) and a move-to request. **All pose functions are
+   native: redirects never fire on them, not even for calls from C#; calling them from C# works.** `Tweak_Anim_*`
+   (editor override) does nothing in the shipping game.
+   - Locomotion: a puppet with `PHYS_Walking`, actor collision on (the city's floors are static-mesh actors; without
+     it the puppet falls through roofs), `SetMovementSpeed(MS_*)` and `MoveTo(pos)` plays the game's real run/walk cycle.
+   - Actions: each strike/counter/hit reaction raises `Anim.PosePlayer.LastTransitionId`; the clip is
+     `Pose.CustomTransition.CustomFullBodyAnim` (e.g. `Anim_Batman_Combat.Code.BM_Attack:AnimSequence_19`). The owner
+     sends type, stances, name, clip path, target, yaw (degrees; the call wants 65536 units per turn), meeting point;
+     the puppet calls `StartRelativeTransition*`/`ChangePose` with the same. Verified: the puppet plays the same
+     clips in order ~0.1 s later (strike 174, hit reaction 16).
+   - The puppet's pending `MoveTo` cut replayed strikes off after ~0.2 s: actions now stop the walk and hold for the
+     clip's `SequenceLength`.
+   - `SetLocation` on the walking puppet is refused when the spot touches an actor/geometry: refused corrections are
+     retried with collision off for that move.
+   - Tracking on open roof floor vs the interpolated target: xy p50 18 uu, p95 ~130 uu with spikes where the bot's
+     flat made-up circle crosses raised geometry (|z| p95 96). `PuppetMode=kinematic` keeps 0.2's exact snapping.
+6. **Combat (the basis of PVP):**
+   - `RCharacter.StaticCreatePawn(pos, rot, null, RPawnVillainThug class, character class, ...)` makes a thug with its
+     AI (`RBMAIController`, `RBMBehaviour_CombatAI`). `EnterCombat(true,true)`, then `bCanAttack = true` on the
+     behaviour (the combat manager hands out attack tokens) and `AttackTargetPawnWithClass(RCombatMove_VillainCloseAttack)`
+     attacks the player on demand: counter icon, real counter window, real damage (10 per hit at normal difficulty).
+   - `RPlayerControllerCombat.TriggerCounter(true)` during the icon counters it (`RCombatMove_BatmanCounter`).
+     `TryStrike(0)` strikes (freeflow picks the target natively; it does pick a hidden thug).
+   - Damage both ways goes through the `TakeDamage` redirects (`RPawn`, `RPawnVillain`).
+   - **A thug that is not drawn never lands its strike** (HiddenGame, shrunk to 0.001, owner-no-see all fail;
+     `LastRenderTime` forced every frame does not help either): the attack shows its icon and gives up after ~0.6 s.
+     So the proxy's hit is applied by BatCoop: the attack's own `RCombatMove_VillainCloseAttack.DamagePawn(me)` while it
+     runs (after 1.15 s), else a thug-like `TakeDamage` when the game gives the attack up. Counter window ~0.6 s.
+   - A countered thug stays knocked down even with full health; its next attacks show the icon but cannot be
+     countered. Proxies are replaced with a fresh one after a counter, a ragdoll, or 1.5 s in a non-attack move.
+   - `SetLocation` on the proxy is refused when it overlaps the puppet or us: proxies collide with no actor, so they
+     stay pinned inside the puppet (max 1 uu over 290 samples, during attacks too), which keeps the counter icon over
+     the other player (the user saw it off to one side before: the attack lunge carried the proxy away).
+   - Calling the native `FindStrikeTarget` with a null damage class crashed the game. Never pass null classes to
+     native combat functions.
+   - Proxies are excluded from NPC sync (`NpcHostPort.IsLive`), never bark, never throw bricks, never attack on their
+     own (`CanStartAttacking` redirected), and take no damage (strikes on them are the attacker's request only).
+7. **Input:** BmSDK's `OnKeyDown` cannot consume keys. `_Console.InputKey`/`InputChar` redirects see every key before
+   the player controller and can swallow it: the chat box and the host menu use them (W while typing does not walk;
+   T is taken in a room). The game's own binding of T is `TriggerSecondaryGroupCombatMove` (`BmInput.ini`, with a
+   `:META:COM_SECONDARY_GROUP_COMBAT` entry for the Controls menu). The Controls menu is a fixed Flash screen; BatCoop's
+   keys are rebound in the host menu instead (saved to BatCoop.ini).
+8. Mission lines come from the host's committed story diffs (`WorldSync.StepCommitted`): a new primary objective, a
+   main chapter going up, a side-mission chapter going up; credited to the guest whose intent the host applied in
+   the 3 s before, else the host. The first commit of a room is the baseline and makes no line.
+
+Tests at 0.3.0:
+- Offline: 41/41 (12 new: identity, host_settings, host_settings_late_join, chat_feed, event_feed, pvp_roundtrip,
+  pvp_defeated_down, pvp_off, anim_calls, anim_refresh_stance_only, mission_feed, host_only_skip), animcheck PASS,
+  mutation twins 4/4.
+- In-game `ingame.py` 12/12 (kinematic puppets, see the note in the script) and `ingame_sync.py` 17/17: everything
+  0.2 synced still syncs.
+- In-game PVP (`lab/pvp_check.py`, game = defender, bot = attacker every 6 s, hidden proxies): PASS: 10 forced
+  attacks, 6/6 uncountered hits landed (10 damage), 4/4 lab counters (0.25 s after the icon) countered, 0 misses,
+  proxy pinned within 1 uu; a defeat showed "BotFriend defeated LabHost" on both sides and health came back.
+  Attacker side: 6 strikes at the bot's proxy were sent as attacks; both counters the bot answered hit Batman.
+- In-game UI through the console hooks: T opens the chat, the typed line reached the bot; F3 menu draws, Esc closes;
+  chat key rebound to Y (saved, Y opens the chat) and back; a menu change turned PVP off.
+- Not tested: two real players (two PCs), Steam P2P between two accounts, real keyboard/mouse input (the lab calls
+  the same functions), PVP between two humans, audio by ear, gliding/grappling animation (not synced).
+
+## Handoff (start here in a new session)
+- Repo: `multiplayereverything/batman-arkham-city-gofy-coop`, branch `main`, version 0.3.0, protocol `batcoop-3`.
+- Game: `F:\SteamLibrary\steamapps\common\Batman Arkham City GOTY`, BmSDK 0.21, dgVoodoo2 installed.
+- Build/deploy: `python -I lab/build.py all`, `python -I lab/deploy.py install` (hot reload; a reload ends the
+  co-op room, so re-host). One test copy: `python -I lab/launch.py start host` / `stop`.
+- Bot friend: `sh lab/botfriend.sh <s> <radius> <speed> <log> [x,y,z] [--stand-after 1] [--pvp-attack-every 6]`
+  (stop bot processes before rebuilding the offline lab: they lock its files).
+- Lab bridge research commands: `insp/methods/call/set/find` (reflection on live objects; `obj:<path>|Prop`),
+  `anim`, `animloop`, `pvp`, `pvpshow`, `settings`, `combat watch|counter [delay]|log`, `aithug`, `chatlog`, `ui`,
+  `view`, `hold`, `handles`/`release`.
+- Open items: real two-player test (user + friend); audio while paused by ear; glide/grapple animation; animated
+  puppet spikes on sharp turns; takedown prompt near PVP proxies; longer counter window (make the proxy's attack
+  survive while hidden, then let it land natively).

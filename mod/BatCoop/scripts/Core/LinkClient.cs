@@ -15,6 +15,7 @@ public sealed record PeerJoinedEvent(byte Id, string Name) : LinkEvent;
 public sealed record PeerLeftEvent(byte Id, string Reason) : LinkEvent;
 public sealed record RecvEvent(byte From, byte[] Payload) : LinkEvent;
 public sealed record NoticeEvent(string Text) : LinkEvent;
+public sealed record IdentityEvent(string Name) : LinkEvent;
 public sealed record LinkLostEvent(string Reason) : LinkEvent;
 
 public sealed class LinkClient : IDisposable
@@ -98,6 +99,7 @@ public sealed class LinkClient : IDisposable
             case LinkToMod.PeerLeft: return new PeerLeftEvent(r.U8(), r.Str());
             case LinkToMod.Recv: return new RecvEvent(r.U8(), r.Bytes());
             case LinkToMod.Notice: return new NoticeEvent(r.Str());
+            case LinkToMod.Identity: return new IdentityEvent(r.Str());
             default: return null;
         }
     }

@@ -505,6 +505,138 @@ Run("cutscene_vote", () =>
     host.Dispose(); g2.Dispose();
 });
 
+// ---------------------------------------------------------------- 0.3: names, settings, chat, PVP, animation
+
+Run("v03_room", () =>
+{
+    int dport = NextPort();
+    using var host = MakeBot("HostName", FakeWorld.Still(new(0, 0, 100)));
+    using var g1 = MakeBot("GuestOne", FakeWorld.Still(new(100, 0, 100)));
+    using var g2 = MakeBot("GuestTwo", FakeWorld.Still(new(200, 0, 100)));
+    var all = new[] { host, g1, g2 };
+    host.Session.Host(TransportKind.Direct, 4, dport);
+    TickUntil(all, () => host.Session.State == LinkState.Hosting, 5);
+    g1.Session.Join(TransportKind.Direct, $"127.0.0.1:{dport}");
+    g2.Session.Join(TransportKind.Direct, $"127.0.0.1:{dport}");
+    bool joined = TickUntil(all, () => all.All(b => b.Session.Remotes.Count == 2), 8);
+
+    // The link reports the name others see (the ini name here; the Steam name when it is empty).
+    Check("identity", joined && host.Session.LocalName == "HostName" && g1.Session.LocalName == "GuestOne" && g2.Session.Remotes[g1.Session.LocalId].Name == "GuestOne",
+        $"names: host '{host.Session.LocalName}', guest '{g1.Session.LocalName}', guest2 sees '{g2.Session.Remotes[g1.Session.LocalId].Name}'");
+
+    // Host settings reach every guest, now and after a change.
+    host.Session.SetHostSettings(new HostSettings { Pvp = true, PvpDamagePercent = 150, AllowTeleport = false, CutsceneSkip = SkipMode.HostOnly });
+    bool settings = TickUntil(all, () => g1.Session.Settings.Pvp && g2.Session.Settings.PvpDamagePercent == 150 && !g2.Session.Settings.AllowTeleport
+                                         && g1.Session.Settings.CutsceneSkip == SkipMode.HostOnly && g1.Session.Pvp.Enabled, 3);
+    Check("host_settings", settings, $"guests got PVP={g1.Session.Settings.Pvp} damage={g2.Session.Settings.PvpDamagePercent}% teleport={g2.Session.Settings.AllowTeleport} skip={g1.Session.Settings.CutsceneSkip}");
+
+    // A late joiner gets the settings too.
+    using var g3 = MakeBot("Late", FakeWorld.Still(default));
+    g3.Session.Join(TransportKind.Direct, $"127.0.0.1:{dport}");
+    var all4 = new[] { host, g1, g2, g3 };
+    bool late = TickUntil(all4, () => g3.Session.Settings.Pvp && g3.Session.Settings.PvpDamagePercent == 150, 8);
+    Check("host_settings_late_join", late, $"late joiner PVP={g3.Session.Settings.Pvp} damage={g3.Session.Settings.PvpDamagePercent}%");
+
+    // Chat feed: the sender's own line, everyone else's line, join lines.
+    g1.Session.SendChat("hi all");
+    bool chat = TickUntil(all4, () => g2.Session.Feed.Lines.Any(l => l.Kind == FeedKind.Chat && l.Who == "GuestOne" && l.Text == "hi all")
+                                      && g1.Session.Feed.Lines.Any(l => l.Kind == FeedKind.Chat && l.Text == "hi all"), 3);
+    bool joinLine = host.Session.Feed.Lines.Any(l => l.Kind == FeedKind.Joined && l.Who == "Late");
+    Check("chat_feed", chat && joinLine, $"chat line on both sides={chat}; host saw 'Late joined'={joinLine}");
+
+    // Event lines: a defeat seen by everyone.
+    g2.Session.SendEvent(FeedKind.Defeated, "GuestOne", "GuestTwo");
+    bool ev = TickUntil(all4, () => host.Session.Feed.Lines.Any(l => l.Kind == FeedKind.Defeated && FeedMessages.Format(l) == "* GuestOne defeated GuestTwo"), 3);
+    Check("event_feed", ev, "a defeat line reached the host");
+
+    // PVP: g1 attacks g2; g2 answers Hit, then Countered; everyone hears the outcomes once.
+    var outcomes = new List<PvpResult>();
+    g1.Session.Pvp.OutcomeReceived += r => outcomes.Add(r);
+    var hostHeard = new List<PvpResult>();
+    host.Session.Pvp.OutcomeReceived += r => hostHeard.Add(r);
+    uint a1 = g1.Session.Pvp.SendAttack(g1.Session.LocalId, g2.Session.LocalId, "RCombatMove_BatmanQuickStrike", g1.World.Now);
+    PvpAttack inc = default;
+    bool arrived = TickUntil(all4, () => g2.Session.Pvp.TryTakeIncoming(out inc), 3);
+    g2.Session.Pvp.Report(new PvpResult(inc.Id, inc.Attacker, g2.Session.LocalId, PvpOutcome.Hit, 15));
+    uint a2 = g1.Session.Pvp.SendAttack(g1.Session.LocalId, g2.Session.LocalId, "RCombatMove_BatmanQuickStrike", g1.World.Now);
+    PvpAttack inc2 = default;
+    TickUntil(all4, () => g2.Session.Pvp.TryTakeIncoming(out inc2), 3);
+    g2.Session.Pvp.Report(new PvpResult(inc2.Id, inc2.Attacker, g2.Session.LocalId, PvpOutcome.Countered, 0));
+    bool done = TickUntil(all4, () => outcomes.Count == 2 && hostHeard.Count == 2 && g1.Session.Pvp.Pending == 0, 3);
+    Check("pvp_roundtrip", arrived && done && inc.Attacker == g1.Session.LocalId && outcomes[0].Outcome == PvpOutcome.Hit && outcomes[0].Damage == 15
+                           && outcomes[1].Outcome == PvpOutcome.Countered && outcomes[1].Id == a2 && outcomes[0].Id == a1,
+        $"attack arrived={arrived} from {inc.Attacker}; attacker heard {string.Join(",", outcomes.Select(o => o.Outcome + ":" + o.Damage))}; host heard {hostHeard.Count}; pending {g1.Session.Pvp.Pending}");
+
+    // A defeated player is down for everyone: no attacks are sent at them meanwhile.
+    g2.Session.Pvp.ReportDefeated(g2.Session.LocalId, g1.Session.LocalId, g2.World.Now);
+    bool down = TickUntil(all4, () => g1.Session.Pvp.IsDown(g2.Session.LocalId, g1.World.Now), 3);
+    uint none = g1.Session.Pvp.SendAttack(g1.Session.LocalId, g2.Session.LocalId, "x", g1.World.Now);
+    Check("pvp_defeated_down", down && none == 0, $"attacker sees the victim down={down}; attack refused={none == 0}");
+
+    // PVP off: attacks are not sent, incoming ones ignored.
+    host.Session.SetHostSettings(new HostSettings { Pvp = false });
+    bool off = TickUntil(all4, () => !g1.Session.Pvp.Enabled && !g2.Session.Pvp.Enabled, 3);
+    uint offId = g1.Session.Pvp.SendAttack(g1.Session.LocalId, g3.Session.LocalId, "x", g1.World.Now);
+    Check("pvp_off", off && offId == 0, $"guests turned PVP off={off}; attack refused={offId == 0}");
+
+    // Animation: a pose call travels in order, waits the interpolation delay, keeps its clip and target.
+    var call = new PoseCall(PoseTransition.RelativeRotationOnly, "Standing", "Relaxed", "", "", "Anim_Batman_Combat.Code.BM_Attack:AnimSequence_19", "", "", "",
+                            true, 0, 1, false, 0, new Vector3(1, 2, 3), -175, 0.4f, 0);
+    g1.Session.Send(call.Encode(1));
+    g1.Session.Send((call with { Clip = "", Type = PoseTransition.Normal }).Encode(2));
+    var q = () => g2.Session.Remotes[g1.Session.LocalId].Poses;
+    bool got = TickUntil(all4, () => q().Received == 2, 3);
+    bool early = q().TryTake(g2.World.Now, 10, out _); // not yet: still inside the delay
+    TickFor(all4, 0.15);
+    bool t1 = q().TryTake(g2.World.Now, 0.1, out var r1), t2 = q().TryTake(g2.World.Now, 0.1, out var r2);
+    Check("anim_calls", got && !early && t1 && t2 && r1 == call && r2.Type == PoseTransition.Normal && r1.ClipShort == "BM_Attack:AnimSequence_19",
+        $"received {q().Received}, held back before the delay={!early}, replayed in order: {r1} / {r2.Type}");
+
+    // A resent stance never replays an old strike: the sender's refresh carries the stance only.
+    var sender = new PoseSender();
+    var first = sender.Tick(5, () => call, 0);
+    var refresh = sender.Tick(5, () => call, 3.5);
+    var rr = new WireReader(refresh!); rr.U8();
+    var back = PoseCall.Decode(ref rr, out _);
+    Check("anim_refresh_stance_only", first != null && back.Clip == "" && back.Type == PoseTransition.Normal && back.Movement == "Standing",
+        $"refresh after 3 s: {back}");
+});
+
+Run("mission_feed", () =>
+{
+    var before = new WorldState();
+    var first = MissionFeed.Describe([WorldEffect.Number("ch:main", 3)], before);
+    before.Set(WorldEffect.Number("ch:main", 3));
+    before.Set(WorldEffect.Text("obj:primary", "OBJ_FindThe_Penguin"));
+    before.Set(WorldEffect.Number("ch:side:4", 1));
+    var chapter = MissionFeed.Describe([WorldEffect.Number("ch:main", 4)], before);
+    var objective = MissionFeed.Describe([WorldEffect.Text("obj:primary", "OBJ_Next")], before);
+    var side = MissionFeed.Describe([WorldEffect.Number("ch:side:4", 2)], before);
+    var flag = MissionFeed.Describe([WorldEffect.Flag("g:SomeDoor", true)], before);
+    Check("mission_feed", first == null && chapter == "story chapter 3" && objective == "the objective \"Find The Penguin\"" && side == "a step of side mission 5" && flag == null,
+        $"baseline={first ?? "-"}; chapter='{chapter}'; objective='{objective}'; side='{side}'; flag={flag ?? "-"}");
+});
+
+Run("host_only_skip", () =>
+{
+    int dport = NextPort();
+    using var host = MakeBot("Host", FakeWorld.Still(default));
+    host.Session.Host(TransportKind.Direct, 4, dport);
+    TickUntil([host], () => host.Session.State == LinkState.Hosting, 5);
+    using var g = MakeBot("G", FakeWorld.Still(default));
+    g.Session.Join(TransportKind.Direct, $"127.0.0.1:{dport}");
+    TickUntil([host, g], () => g.Session.State == LinkState.Joined && host.Session.Remotes.Count == 1, 8);
+    int skips = 0;
+    g.Session.Vote.SkipNow += () => skips++;
+    host.Session.Vote.HostDecides = true;
+    host.Session.Vote.LocalWatching(true, true, host.Session.LocalId);
+    g.Session.Vote.LocalWatching(true, false, g.Session.LocalId);
+    TickUntil([host, g], () => g.Session.Vote.Needed == 2, 3);
+    host.Session.Vote.LocalVote(true, host.Session.LocalId);
+    bool skipped = TickUntil([host, g], () => skips == 1, 3);
+    Check("host_only_skip", skipped, $"with 'host only' the host's skip alone skipped for the guest ({skips})");
+});
+
 Console.WriteLine($"RESULT: {(failed == 0 ? "PASS" : "FAIL")} ({passed} passed, {failed} failed{(failed > 0 ? ": " + string.Join(", ", failures) : "")})");
 return failed == 0 ? 0 : 1;
 

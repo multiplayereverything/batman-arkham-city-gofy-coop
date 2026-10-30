@@ -9,6 +9,7 @@ using BatCoop.Core;
 using BmSDK;
 using BmSDK.BmGame;
 using BmSDK.Engine;
+using BmSDK.AkAudio;
 
 namespace BatCoop.Game;
 
@@ -78,6 +79,7 @@ static class SyncHooks
                                Class damageType, Actor.FTraceHitInfo hitInfo, Actor damageCauser)
     {
         Count("TakeDamage", $"{self.Class.Name} {damage}");
+        if (!Pvp(self, ref damage, instigatedBy, damageCauser, damageType)) return;
         if (S?.ForwardNpcHit(self, damage, hitLocation, momentum, damageType) == true) return;
         self.TakeDamage(damage, instigatedBy, hitLocation, momentum, damageType, hitInfo, damageCauser);
     }
@@ -87,8 +89,21 @@ static class SyncHooks
                                   Class damageType, Actor.FTraceHitInfo hitInfo, Actor damageCauser)
     {
         Count("TakeDamageVillain", $"{self.Class.Name} {damage}");
+        if (!Pvp(self, ref damage, instigatedBy, damageCauser, damageType)) return;
         if (S?.ForwardNpcHit(self, damage, hitLocation, momentum, damageType) == true) return;
         self.TakeDamage(damage, instigatedBy, hitLocation, momentum, damageType, hitInfo, damageCauser);
+    }
+
+    /// <summary>PVP: proxies never take damage; hits from a player's proxy on us are scaled and never kill.
+    /// False = drop the damage.</summary>
+    static bool Pvp(Pawn self, ref int damage, Controller instigatedBy, Actor damageCauser, Class damageType)
+    {
+        var p = PvpBridge.Current;
+        if (p == null) return true;
+        int d = p.FilterDamage(S?.Session, self, damage, instigatedBy, damageCauser, damageType);
+        if (d <= 0 && damage > 0) return false;
+        damage = d;
+        return true;
     }
 
     // No pause in multiplayer: refuse the pause itself. While paused the world does not tick, so a guard that runs
@@ -99,6 +114,56 @@ static class SyncHooks
         Count("SetPause", pause.ToString());
         if (pause && S?.BlockPause == true) { S.PausesBlocked++; return false; }
         return self.SetPause(pause, canUnpause);
+    }
+
+    // Menus switch the game's audio into a paused state through these; logged for the lab.
+    [Redirect(typeof(RGFxMovie), nameof(RGFxMovie.SetGlobalAudioState))]
+    static void MovieGlobalAudioState(RGFxMovie self, FString state, FString value)
+    {
+        Count("Movie.SetGlobalAudioState", $"{self.Class.Name} {state}={value}");
+        self.SetGlobalAudioState(state, value);
+    }
+
+    [Redirect(typeof(RGFxMovie), nameof(RGFxMovie.SetAudioState))]
+    static void MovieAudioState(RGFxMovie self, FString state, FString value)
+    {
+        Count("Movie.SetAudioState", $"{self.Class.Name} {state}={value}");
+        self.SetAudioState(state, value);
+    }
+
+    [Redirect(typeof(RGFxMovie), nameof(RGFxMovie.GameMovieSetPauseState))]
+    static void MoviePauseState(RGFxMovie self, bool pause)
+    {
+        Count("Movie.GameMovieSetPauseState", $"{self.Class.Name} {pause}");
+        self.GameMovieSetPauseState(pause);
+    }
+
+    [Redirect(typeof(RGFxMovie), nameof(RGFxMovie.PostAudioEvent))]
+    static int MoviePostAudioEvent(RGFxMovie self, int channel, FString name)
+    {
+        Count("Movie.PostAudioEvent", $"{self.Class.Name} {name}");
+        return self.PostAudioEvent(channel, name);
+    }
+
+    [Redirect(typeof(RGFxMovie), nameof(RGFxMovie.StartFlashAudioEvent))]
+    static int MovieFlashAudioEvent(RGFxMovie self, FString name)
+    {
+        Count("Movie.StartFlashAudioEvent", $"{self.Class.Name} {name}");
+        return self.StartFlashAudioEvent(name);
+    }
+
+    [Redirect(typeof(RPlayerController), nameof(RPlayerController.SetAudioFade))]
+    static void SetAudioFade(RPlayerController self, float value)
+    {
+        Count("SetAudioFade", value.ToString());
+        self.SetAudioFade(value);
+    }
+
+    [Redirect(typeof(RPlayerController), nameof(RPlayerController.StartPausePP))]
+    static void StartPausePP(RPlayerController self)
+    {
+        Count("StartPausePP", "");
+        self.StartPausePP();
     }
 
     [Redirect(typeof(RPlayerController), nameof(RPlayerController.SkipCutscene))]

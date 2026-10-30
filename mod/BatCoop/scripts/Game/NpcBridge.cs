@@ -14,8 +14,9 @@ public sealed class NpcHostPort : INpcHostPort
 {
     readonly Dictionary<long, RBMPawnAI> _byHandle = [];
 
+    /// <summary>A real NPC of this world: not a class default, not being deleted, not one of our PVP proxies.</summary>
     public static bool IsLive(RBMPawnAI p) =>
-        p.IsValid && !p.bDeleteMe && !p.Name.ToString()!.StartsWith("Default__") && p.WorldInfo != null;
+        p.IsValid && !p.bDeleteMe && !p.Name.ToString()!.StartsWith("Default__") && p.WorldInfo != null && !PvpBridge.IsProxy(p);
 
     public IEnumerable<NpcSample> Sample()
     {

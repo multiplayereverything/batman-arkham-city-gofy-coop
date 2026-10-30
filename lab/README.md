@@ -39,7 +39,23 @@ So `--avatar host=game:0x100>bot:0x200` compares the host's real movement with w
 ## What the lab cannot cover
 - Two Steam accounts: one PC runs one Steam account, so Steam lobby join and Steam P2P between two players need
   two PCs. `lab/steam_smoke.py` covers what one account can: Steam starts as Spacewar and a tagged lobby is created.
-- Two game copies on one PC: not enough free memory on this PC (one copy 1.4 GB, 1.5 GB left); a bot plays the other
-  side in each role instead.
+- Two game copies on one PC: the Steam wrapper refuses a second running copy (memory is no longer the limit, and the
+  game's own mutex can be released); a bot plays the other side in each role instead.
 - Real input: a real punch, a real skip key press and a real story cutscene were not driven (no input automation);
   the lab calls the same functions the hooks call.
+
+## 0.3 additions
+| Tool | What it checks |
+|---|---|
+| `python -I lab/pvp_check.py [--seconds 50] [--counter-every 2]` | PVP with one real game as the defender and a bot attacking it (`sh lab/botfriend.sh ... --stand-after 1 --pvp-attack-every 6`): the hidden proxy stays inside the bot's puppet (counter icon position), forced thug attacks land, perfect-timing counters (0.25 s after the icon) counter them, a defeat comes back up. |
+| `python -I lab/track_check.py` | How far the animated puppet is from its interpolated target (xy and height) while a bot circles. |
+| `sh lab/botfriend.sh <s> <radius> <speed> <log> [x,y,z] [bot args]` | Hosts on the game copy (bridge 37900) and starts a bot that joins, circles or stands, attacks in PVP and chats. |
+| `python -I lab/shot.py 37900 out.png` | The game's own screenshot as PNG. |
+| `powershell -File lab/AudioMeter.ps1 -ProcessId <pid>` | Peak level of the game's Windows audio session (an unfocused game window reports silence, so this only helps with a focused window). |
+
+New bridge commands: `insp <expr> [depth] [filter]`, `methods <expr> [filter]`, `call <expr> <Method> [args]`,
+`set <expr> <Prop> <value>`, `find <Type> [n] [name]` (reflection on live game objects; roots `pawn pc wi gri pd engine
+console puppet npc last obj:<path>|Prop.Sub`), `anim`, `animloop on|off` (our own transitions also replayed on the first
+puppet), `hold on|off`, `view`, `pvp`, `pvpshow on|off`, `settings [name value]`, `combat watch|counter [delay]|log [clear]`,
+`aithug [character]`, `chatlog`, `ui`, `handles [filter]`, `release <name end>`.
+Never pass `null` for a class to native combat functions through `call` (it crashed the game).

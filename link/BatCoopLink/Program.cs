@@ -114,13 +114,26 @@ new Thread(() =>
 
 ITransport MakeTransport(TransportKind k) => k == TransportKind.Steam ? new SteamTransport(Log) : new DirectTransport(Log);
 
-using var hub = new Hub(ToMod, Log, MakeTransport) { PeerTimeout = timeout };
-if (steamEarly)
+// The player's Steam name is their default co-op name, on the direct transport too. Steam starts once (as
+// Spacewar) and the same transport serves Steam rooms later.
+SteamTransport? steamUp = null;
+bool steamTried = false;
+Hub? hubRef = null;
+string SteamName()
 {
-    var steam = new SteamTransport(Log);
-    if (steam.Init(out var err)) hub.UseSteamEarly(steam);
-    else Log("steam: not started: " + err);
+    if (!steamTried)
+    {
+        steamTried = true;
+        var st = new SteamTransport(Log);
+        if (st.Init(out var err)) { steamUp = st; hubRef?.UseSteamEarly(st); }
+        else Log("steam: not started: " + err);
+    }
+    return steamUp?.LocalName ?? "";
 }
+
+using var hub = new Hub(ToMod, Log, MakeTransport, SteamName) { PeerTimeout = timeout };
+hubRef = hub;
+if (steamEarly) SteamName();
 
 Process? parent = null;
 if (parentPid != 0)

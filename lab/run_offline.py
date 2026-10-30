@@ -38,7 +38,7 @@ def main():
         r = subprocess.run([DOTNET, os.path.join(ROOT, "lab", "Offline", "bin", "Release", "net10.0", "Offline.dll"), link,
                             os.path.join(OUT, "twin-" + mut), "--only", test], env=env, capture_output=True, text=True)
         failed = [l for l in r.stdout.splitlines() if l.startswith("FAIL")]
-        ok_twin = r.returncode != 0 and failed
+        ok_twin = r.returncode != 0 and bool(failed)
         caught.append(ok_twin)
         print(f"{'PASS' if ok_twin else 'FAIL'} twin {mut}: {'caught by ' + failed[0][5:90] if failed else 'NOT caught: the test passes without this protection'}")
     ok = suite.returncode == 0 and anim.returncode == 0 and all(caught)
