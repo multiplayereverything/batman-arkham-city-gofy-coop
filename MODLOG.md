@@ -236,8 +236,58 @@ Tests at 0.3.1:
 - Not tested: a start that is already fullscreen at a tiny size (the window is left alone there; the toast asks for
   a restart and the fix is written after quitting).
 
+## 0.3.2: Catwoman crash, cutscene skip, PVP shelved (2026-10-29)
+Asked for: the skip prompt showed on the main menu, and a passed vote must really skip; the game crashed the moment the
+friend joined at Catwoman at the start of the game; fix other bugs found; 0.3.2. Mid-way the user decided: PVP fully
+off and kept as a draft (later, thug-based, hot-toggleable without crash risk), core co-op first.
+
+Findings (the player's logs, then the lab):
+1. The player's crash: host in the main menu for 27 min, the friend joined, the host started a new game (intro movie,
+   then Catwoman's level `CW`); 11 s after entering `CW` the game died in `coreclr.dll` (0xc0000005, Windows event log).
+2. Reproduced in the lab with the new-game URL from `DefaultGame.ini` (`FE_NewGame`, without `CreateSave`, temp slot):
+   `start batentry?Movie=0_CW_Intro?StreamMovie?Area=CW,CW_C1?Chapters=1,1z,Z1?Start=CW_Start?NoFadeIn?NoFadeOut?Players=Playable_Catwoman?Flags=Batman_RiddlesDisabled`
+   (drop `Movie`/`StreamMovie` to get there in 3 s). Every run crashed 3-9 s after entering CW: with or without PVP,
+   with a Catwoman, Batman or kinematic puppet, with no other player, and **unhosted**. The .NET Runtime events showed
+   access violations inside BmSDK's `StaticFindObjectChecked` from any call (GetEngine, Canvas.SetDrawColor) or only
+   `EngineTickDetour`: memory was already broken by then.
+3. Bisected by commenting `[Redirect]` out in the installed copy, with `LabQuiet=1` (`BATCOOP_LABQUIET`, new lab key: no per-frame work):
+   all sync and PVP hooks off: no crash (66 s); sync hooks on, **PVP hooks off: no crash** (66 s, twice); PVP hooks on:
+   crash. One of the six `PvpHooks` redirects breaks CW (not narrowed down: the user shelved PVP).
+4. Also found: `OnEnterGame` called `Forget()` on puppets and PVP proxies of the **same** world. Puppets are spawned as
+   soon as the WorldInfo changes, before `OnEnterGame`, so the first puppet and proxy were orphaned in the level (the
+   player's log shows both spawned twice).
+5. Cutscene skip. Left mouse is bound to `... | SkipCutscene` (the strike button), and the game also calls SkipCutscene
+   itself while loading. 0.3.1 made every SkipCutscene in a room a vote, and counted `bCinematicMode` as "watching";
+   the front end is in cinematic mode, so in the menu every click was a 1/1 vote that passed and then called the
+   game's SkipCutscene once, which shows the HUD prompt "click to skip the cutscene" (`RHUD.ShowSkipPrompt`): the
+   reported prompt on the main menu. The game skips on the second press; one call only showed the prompt.
+6. `IsMatineePlaing()` is true all the time in the open world (looping effect Matinees), and story Matinees have
+   `bIsSkippable=False`, so neither tells a story cutscene. The prologue (CH0_Start) plays a 53-73 s first-person
+   Matinee without cinematic mode that the game does not skip. A skippable in-engine story cutscene was not reached
+   in the lab.
+
+Changes:
+- PVP is a draft: `PvpBridge.Available = false` (no bridge, no proxies, no menu rows, the host's `HostPvp` forced off,
+  an older host's PVP setting ignored), `PvpHooks` redirects only with `#if BATCOOP_PVP` (never defined).
+- Puppets and proxies only in a world whose `OnEnterGame` ran (`_enteredWorld`; also set at a script reload in game);
+  `OnEnterGame` no longer forgets actors of its own world (`WorldStillOurs` forgets only on a WorldInfo change).
+- Cutscene vote: "watching" = in an entered world, with our pawn, in cinematic mode, and not marked unskippable. A
+  skip press is a vote only while watching; everywhere else it goes to the game. A passed vote presses skip twice
+  (prompt + confirm), up to 4 times 0.6 s apart from the world tick until cinematic mode ends; if it does not end, the
+  overlay says "This cutscene can't be skipped" and that cutscene gets no vote. Pauses stay blocked in a room.
+- Lab: `launch.py` takes `LAB_URL` (start straight into a map URL), `LabQuiet=1`, bot `--character Catwoman`.
+
+Tests at 0.3.2:
+- Offline 42/42, animcheck PASS, twins 4/4. `ingame.py` 12/12. `ingame_sync.py --skip-travel` 16/16 (the first run had
+  `A_cutscene_vote` FAIL once: the bot's vote reached the host in the same frame the host's lab "watch on" took
+  effect, so 1/1 passed; second run PASS).
+- The crash scenario on the final build (host, Catwoman bot joined in the open world, new game with the intro movie,
+  PVP requested on): alive 150 s, puppet spawned once in CW, no proxy. 0.3.1 crashed within 3-9 s every time.
+- A skip press in a room outside a cutscene: not a vote (0/0), passed to the game.
+- Not tested: a vote skipping a real skippable story cutscene (none reachable in the lab without playing); two humans.
+
 ## Handoff (start here in a new session)
-- Repo: `multiplayereverything/batman-arkham-city-gofy-coop`, branch `main`, version 0.3.1, protocol `batcoop-3`.
+- Repo: `multiplayereverything/batman-arkham-city-gofy-coop`, branch `main`, version 0.3.2, protocol `batcoop-3`.
 - Game: `F:\SteamLibrary\steamapps\common\Batman Arkham City GOTY`, BmSDK 0.21, dgVoodoo2 installed.
 - Build/deploy: `python -I lab/build.py all`, `python -I lab/deploy.py install` (hot reload; a reload ends the
   co-op room, so re-host). One test copy: `python -I lab/launch.py start host` / `stop`.
@@ -248,6 +298,10 @@ Tests at 0.3.1:
   `view`, `hold`, `handles`/`release`.
 - Lab copies run windowed; `launch.py`/`ingame.py` keep the player's resolution (`lab/display_keep.py show`).
   Never run `scale set` through `exec` (crash).
-- Open items: real two-player test (user + friend); audio while paused by ear; glide/grapple animation; animated
-  puppet spikes on sharp turns; takedown prompt near PVP proxies; longer counter window (make the proxy's attack
-  survive while hidden, then let it land natively).
+- Crash repro for any level: `LAB_URL=<map url> python -I lab/launch.py start host`, or exec the URL from a lab copy;
+  bisect hooks by commenting `[Redirect]` in the installed copy with `BATCOOP_LABQUIET=1`; read crash stacks from the
+  Windows Application log (".NET Runtime" events).
+- PVP is shelved (draft, `PvpBridge.Available=false`); do not re-enable unless the user asks. When it comes back: find
+  which PvpHooks redirect breaks CW first, keep it thug-based, make it safe to toggle at any time.
+- Open items: real two-player test (user + friend); a vote skip of a real story cutscene; audio while paused by ear;
+  glide/grapple animation; animated puppet spikes on sharp turns.

@@ -26,6 +26,8 @@ public sealed class CutsceneVote
     public int Needed { get; private set; }
     public bool Active => Needed > 0;
     public bool LocalVoted { get; private set; }
+    /// <summary>This machine is in a cutscene the vote covers (its skip presses are votes).</summary>
+    public bool IsWatching => _localWatching;
     public long SkipsDone { get; private set; }
 
     /// <summary>Raised on every machine when the vote passes; the game layer then skips its cutscene once.</summary>

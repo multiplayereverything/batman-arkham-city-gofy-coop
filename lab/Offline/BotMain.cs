@@ -15,6 +15,7 @@ public static class BotMain
         float radius = 400, speed = 300;
         double seconds = 30, waitJoin = 30, pvpEvery = 0, standAfter = -1;
         string chat = "";
+        var character = CharacterId.Batman;
         int linkPort = 38960;
         var ci = CultureInfo.InvariantCulture;
         for (int i = 0; i < args.Length; i++)
@@ -37,6 +38,8 @@ public static class BotMain
                 // Stop circling after N seconds and stand still (for strikes from the host).
                 case "--stand-after": standAfter = double.Parse(args[++i], ci); break;
                 case "--chat": chat = args[++i]; break;
+                // The character the bot plays (its puppet's pawn class on the game's side): Batman, Catwoman, ...
+                case "--character": character = Enum.Parse<CharacterId>(args[++i], true); break;
                 case "--center":
                     var p = args[++i].Split(',').Select(x => float.Parse(x, ci)).ToArray();
                     center = new Vector3(p[0], p[1], p[2]);
@@ -50,6 +53,7 @@ public static class BotMain
         double standAt = standAfter >= 0 ? FakeWorld.Clock.Elapsed.TotalSeconds + standAfter : double.MaxValue;
         Func<double, (Vector3, float, Vector3)> path = t => t < standAt ? circle(t) : (circle(standAt).Item1, circle(standAt).Item2, Vector3.Zero);
         using var bot = new Bot(name, linkPort, new FakeWorld(name, path), linkExe, outDir);
+        bot.World.LocalInfo = bot.World.LocalInfo with { Character = character, PawnClass = character == CharacterId.Catwoman ? "RPawnPlayerCatwoman" : "RPawnPlayerBm" };
         bot.Session.Join(TransportKind.Direct, join);
 
         var end = DateTime.UtcNow.AddSeconds(waitJoin);

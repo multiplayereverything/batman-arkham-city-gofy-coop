@@ -113,8 +113,6 @@ public sealed class CoopUi
 
     static readonly Row[] Rows =
     [
-        new("PVP (fight other players)", s => s.Pvp ? "ON" : "OFF", (s, d) => s with { Pvp = !s.Pvp }, true),
-        new("PVP damage", s => $"{s.PvpDamagePercent}%", (s, d) => s with { PvpDamagePercent = Step(DamageSteps, s.PvpDamagePercent, d) }, true),
         new("Go to friend (F8)", s => s.AllowTeleport ? "ALLOWED" : "OFF", (s, d) => s with { AllowTeleport = !s.AllowTeleport }, true),
         new("Name tags", s => s.NameTags ? "ON" : "OFF", (s, d) => s with { NameTags = !s.NameTags }, true),
         new("Cutscene skip", s => s.CutsceneSkip == SkipMode.Vote ? "VOTE" : "HOST ONLY", (s, d) => s with { CutsceneSkip = s.CutsceneSkip == SkipMode.Vote ? SkipMode.HostOnly : SkipMode.Vote }, true),
@@ -123,7 +121,7 @@ public sealed class CoopUi
         new("Host menu key", _ => "", null, false),
         new("Close", _ => "", null, false),
     ];
-    const int RowChatKey = 6, RowMenuKey = 7, RowClose = 8;
+    const int RowChatKey = 4, RowMenuKey = 5, RowClose = 6;   // PVP rows are back when PvpBridge.Available is
 
     static int Step(int[] steps, int cur, int dir)
     {

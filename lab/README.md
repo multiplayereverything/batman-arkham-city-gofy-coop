@@ -60,3 +60,15 @@ console puppet npc last obj:<path>|Prop.Sub`), `anim`, `animloop on|off` (our ow
 puppet), `hold on|off`, `view`, `pvp`, `pvpshow on|off`, `settings [name value]`, `combat watch|counter [delay]|log [clear]`,
 `aithug [character]`, `chatlog`, `ui`, `handles [filter]`, `release <name end>`.
 Never pass `null` for a class to native combat functions through `call` (it crashed the game).
+
+## 0.3.2 additions
+| Tool | What it does |
+|---|---|
+| `LAB_URL=<map url> python -I lab/launch.py start host` | Starts the copy straight into that map URL (no mod needed to get there). |
+| `BATCOOP_LABQUIET=1` | The mod does nothing per frame but the lab bridge (is a crash ours or the game's?). |
+| bot `--character Catwoman` | The bot plays that character (its puppet's pawn class on the game's side). |
+
+Catwoman's level at the start of a new game (the 0.3.1 crash): exec
+`start batentry?Area=CW,CW_C1?Chapters=1,1z,Z1?Start=CW_Start?NoFadeIn?NoFadeOut?Players=Playable_Catwoman?Flags=Batman_RiddlesDisabled`
+(add `Movie=0_CW_Intro?StreamMovie?` for the intro movie). Crash stacks are in the Windows Application log (".NET Runtime").
+

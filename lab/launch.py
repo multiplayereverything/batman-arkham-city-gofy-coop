@@ -57,7 +57,11 @@ def start(roles):
                    BATCOOP_NAME="Lab" + role.capitalize(), BATCOOP_LOGTAG=role,
                    BATCOOP_PROBEPATH=os.path.join(OUT, f"{role}.probe.jsonl"), BATCOOP_PROBEMACHINE=role)
         res = "-ResX=960 -ResY=540".split()
-        subprocess.Popen([EXE, "-windowed", *res, "-nostartupmovies"], cwd=os.path.dirname(EXE), env=env)
+        # LAB_URL: start straight into that map URL (works without the mod, e.g. to compare with BatCoop off).
+        url = [os.environ["LAB_URL"]] if os.environ.get("LAB_URL") else []
+        if url:
+            env["BATCOOP_LABENTERWORLD"] = "0"
+        subprocess.Popen([EXE, *url, "-windowed", *res, "-nostartupmovies"], cwd=os.path.dirname(EXE), env=env)
         end = time.time() + 60
         new = set()
         while time.time() < end and not new:

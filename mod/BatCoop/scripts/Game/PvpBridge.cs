@@ -13,6 +13,11 @@ namespace BatCoop.Game;
 
 public sealed class PvpBridge
 {
+    /// <summary>PVP is a draft: off in every build until its hooks are safe in every level (see PvpHooks). While
+    /// false no bridge exists, no proxy is spawned, the host menu has no PVP rows and a host's PVP setting
+    /// (from an ini or an older host) is ignored.</summary>
+    public const bool Available = false;
+
     sealed class Proxy
     {
         public required byte Player;

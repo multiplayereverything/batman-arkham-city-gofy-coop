@@ -4,8 +4,9 @@ by NickBin (RealAnxiousGit)
 Roam Arkham City together. Every player runs their own game and sees the other players move through the
 city in real time. Friends join over Steam without opening ports, or over a direct IP address on a LAN or VPN.
 
-Status: **0.3.1, early**. Players walk, run and fight with the game's own animations; the story, missions, NPCs and
-cutscene skips are shared; there is a chat, a host menu and an optional PVP mode. See "What syncs" below.
+Status: **0.3.2, early**. Players walk, run and fight with the game's own animations; the story, missions, NPCs and
+cutscene skips are shared; there is a chat and a host menu. See "What syncs" below. PVP is switched off in 0.3.2 and
+kept as a draft for a later version (see "PVP (draft, off)").
 
 ## Requirements
 - Batman: Arkham City GOTY, Steam version (Epic should work with BmSDK but is untested here; GOG is not supported by BmSDK).
@@ -23,10 +24,17 @@ https://github.com/dege-diosg/dgVoodoo2/
 2. Copy the `BatCoop` folder into `<game folder>\BmGame\Mods\`, so you have
    `BmGame\Mods\BatCoop\mod.toml`, `scripts\` and `link\BatCoopLink.exe`.
 3. Start the game normally. BmSDK compiles BatCoop at start-up; `Binaries\Win32\BmSDK.log` says
-   `[BatCoop] ... compiled` and `BatCoop 0.3.1 ... loaded`.
+   `[BatCoop] ... compiled` and `BatCoop 0.3.2 ... loaded`.
 
-Updating from 0.2 or 0.3.0: replace the whole `BatCoop` folder but keep your `BatCoop.ini`. Everyone in a game needs 0.3.x
-(0.2 and 0.3 refuse each other with "Version mismatch"; 0.3.0 and 0.3.1 play together).
+Updating from 0.2 or an older 0.3: replace the whole `BatCoop` folder but keep your `BatCoop.ini`. Everyone in a game
+needs 0.3.x (0.2 and 0.3 refuse each other with "Version mismatch"). 0.3.x versions play together, but **everyone
+should update to 0.3.2**: older versions can crash at the start of a new game (Catwoman's level), and a 0.3.0/0.3.1
+host can still turn PVP on for itself.
+
+**0.3.2 fixes:** the game crashing a few seconds after loading Catwoman's level at the start of a new game (it was
+BatCoop's PVP hooks, which were active even with PVP off); "Click to skip the cutscene" showing on the main menu; a
+skip vote that passed without skipping; every left click in a co-op game counting as a skip vote; and the other
+player's character (and a hidden PVP thug) sometimes being left behind in a level that had just loaded.
 
 To uninstall, delete `BmGame\Mods\BatCoop`.
 
@@ -76,25 +84,29 @@ changed by the co-op game until that guest saves it.
   grapple or fall, their character follows their exact position instead.
 - **No pause:** in a co-op game nobody can pause the world, from the pause menu, the map, or by switching windows.
   Menus still open; the city keeps moving behind them.
-- **Cutscenes:** pressing skip is a vote. The overlay shows "Cutscene: 1/2 voted to skip"; when everyone watching
-  has voted, the cutscene is skipped for everyone at the same moment. The host can set this to "host only".
+- **Cutscenes:** during a story cutscene in a level, pressing skip is a vote. The overlay shows "Cutscene: 1/2 voted
+  to skip"; when everyone watching has voted, the cutscene is skipped for everyone at the same moment. The host can
+  set this to "host only". Anywhere else (menus, loading movies, normal play) the skip key works as in the normal
+  game and is not a vote. If the game will not skip a cutscene, the overlay says so and stops counting votes for it.
 - **Chat:** press T, type, Enter. The chat box also shows when someone joins or leaves, when someone completes a
-  mission objective or story chapter, when a player defeats another in PVP, and when a player is taken down by enemies.
+  mission objective or story chapter, and when a player is taken down by enemies.
 
 ### The host menu (F3)
 | Setting | Default | What it does |
 |---|---|---|
-| PVP (fight other players) | OFF | Players can fight each other like thugs (see below). |
-| PVP damage | 100% | Damage of a PVP hit, from 50% to 200% of a thug's hit. |
 | Go to friend (F8) | ALLOWED | Lets players teleport to each other. |
 | Name tags | ON | Names above other players. |
 | Cutscene skip | VOTE | VOTE: everyone watching must press skip. HOST ONLY: the host's skip skips for everyone. |
-| Event messages in chat | ON | Mission, defeat and "taken down" lines in the chat. |
+| Event messages in chat | ON | Mission and "taken down" lines in the chat. |
 
 Up/Down choose, Left/Right/Enter change, Esc closes. The host's choices are saved in its `BatCoop.ini` and sent to
 every player (also to anyone who joins later).
 
-### PVP
+### PVP (draft, off)
+PVP is off in 0.3.2: its game hooks crashed Arkham City at the start of a new game, even with PVP turned off, so they
+are no longer built into the mod (the menu rows are gone and a host's `HostPvp=1` is ignored). The design below stays
+in the code for a later version, once core co-op is solid. It is kept here for reference.
+
 With PVP on, you fight other players the way you fight thugs: strike at them, chain combos, and **counter** their
 attacks when the counter icon flashes over them. Uncountered hits take health like a thug's hit (scaled by
 "PVP damage"). A player brought down by another player is **defeated**: "A defeated B" shows in the chat, and B
@@ -107,7 +119,7 @@ with a real thug attack (counter icon, counter window), and either they counter 
 hit lands. Each player also has an invisible stand-in thug inside their character on your screen, so freeflow
 combat aims at them and the counter icon shows over them.
 
-## What syncs (0.3.0)
+## What syncs (0.3.2)
 | Synced | How |
 |---|---|
 | Every player's position, facing and velocity | 20 times a second, smoothed on the other machines (100 ms interpolation, short extrapolation, teleports snap) |
@@ -119,7 +131,6 @@ combat aims at them and the counter icon shows over them.
 | The host's map | Guests travel to it with the host's own start URL |
 | NPCs within 60 m of any player | Host streams position, facing, speed, health, knocked-out and hidden 10 times a second; guests drive the same level NPC, or spawn one of the same class and character |
 | Hits on NPCs | Guest hits become requests the host applies once; stale requests from before a reshuffle are ignored |
-| PVP attacks, hits, counters, defeats | Attacker -> defender request; the defender's game resolves it with a real thug attack and tells everyone the outcome |
 | Host settings | Host -> everyone, on change and on join |
 | Pause | Refused in a co-op game; focus pause is switched off |
 | Cutscene skip | Vote (or host only); skipped everywhere once all watching players voted |
@@ -129,17 +140,17 @@ combat aims at them and the counter icon shows over them.
 story flags, gliding and grappling animations (the character follows the exact position there, in its last pose),
 and NPC attack animations on guests (they move and get knocked out, but do not play the host's attack animations).
 
-**Known limits of 0.3.0** (please report what you see):
+**Known limits of 0.3.2** (please report what you see):
 - Not yet tested with two real players (see MODLOG): the two-player parts were tested with one real game and a bot.
 - The other player's character can lag behind them by up to a meter or two for a moment when they turn sharply or
   climb over things while running (animated characters walk the real floor). `PuppetMode=kinematic` in
   `BatCoop.ini` shows exact positions without movement animation, like 0.2.
-- In PVP a "Silent Takedown" prompt can show near another player; a takedown on a player does nothing.
-- In PVP the counter window on a player's attack is about 0.6 s, shorter than most thugs'.
+- The cutscene vote was checked with the lab's stand-in for "watching a cutscene" and with real skip presses outside
+  cutscenes; a vote skipping a real story cutscene in two real games has not been tested yet.
 
 ## How it works
 - `scripts\Core`: game-independent code (wire format, session, interpolation, world/story sync, NPC sync, cutscene
-  vote, animation calls, PVP, chat feed, host settings). The same files are built into the link and the lab, where
+  vote, animation calls, PVP (draft, off), chat feed, host settings). The same files are built into the link and the lab, where
   they are tested without the game.
 - `scripts\Game`: the BmSDK side. Reads the local pawn every frame, spawns one collision-free puppet pawn per remote
   player and drives it, draws the overlay, chat box and host menu through a redirect of `RHUD.PostRender`, takes
@@ -165,6 +176,8 @@ and NPC attack animations on guests (they move and get knocked out, but do not p
 - **Firewall prompt for BatCoopLink**: needed only for direct (IP) play as host.
 - **Shown as "Player"**: Steam was not running when the link started; set `Name=` in `BatCoop.ini`.
 - **T does not open the chat**: the chat only opens in a co-op game; check `ChatKey=` in `BatCoop.ini`.
+- **The game crashes a few seconds into Catwoman's level (new game)**: that was BatCoop 0.3.0/0.3.1; update everyone
+  to 0.3.2.
 - **The game starts in a tiny window / at the lowest resolution**: when the game quits while it runs in a window,
   it saves the window's size as your resolution (`Documents\WB Games\Batman Arkham City GOTY\BmGame\Config\BmEngine.ini`,
   `[SystemSettings]` `ResX`/`ResY`/`Fullscreen`), so a shrunk window comes back at every start. Since 0.3.1 BatCoop
@@ -176,7 +189,7 @@ See `lab/README.md`. In short:
 
 ```
 python -I lab/build.py all          # compile check against BmSDK, link helper, offline lab
-python -I lab/run_offline.py        # offline lab: real link processes + bots + animcheck (41 checks + twins)
+python -I lab/run_offline.py        # offline lab: real link processes + bots + animcheck (42 checks + twins)
 python -I lab/ingame.py             # in-game lab: launches the game, a bot joins, judged from logs and probes
 python -I lab/ingame_sync.py        # in-game story/NPC/pause/vote lab against one real game copy
 python -I lab/deploy.py install     # package to dist/BatCoop and install into the game

@@ -46,6 +46,9 @@ public sealed class BatCoopScript : Script
     public long PausesBlocked;
     double _nextCatalogScan;
     IntPtr _worldPtr;
+    /// <summary>The world whose OnEnterGame has run: puppets and PVP proxies are only spawned in it, never in
+    /// the main menu or in a world that is still loading.</summary>
+    IntPtr _enteredWorld;
     readonly PoseSender _poseSender = new();
     bool _labAnimLoop;
     readonly LabCombat _labCombat = new();
@@ -83,9 +86,13 @@ public sealed class BatCoopScript : Script
         _world.PlayerName = _cfg.Str("Name", "");
         _session = new CoopSession(Log);
         _hostSettings = HostSettings.FromIni(_cfg);
-        _pvp = new PvpBridge(Log);
-        _session.Pvp.OutcomeReceived += r => _pvp.OnOutcome(_session, r);
-        _session.Pvp.DefeatedReceived += (victim, by) => Log($"PVP: {_session.NameOf(by)} defeated {_session.NameOf(victim)}");
+        if (!PvpBridge.Available) _hostSettings = _hostSettings with { Pvp = false };
+        if (PvpBridge.Available)
+        {
+            var pvp = _pvp = new PvpBridge(Log);
+            _session.Pvp.OutcomeReceived += r => pvp.OnOutcome(_session, r);
+            _session.Pvp.DefeatedReceived += (victim, by) => Log($"PVP: {_session.NameOf(by)} defeated {_session.NameOf(victim)}");
+        }
         _ui = new CoopUi(() => _session, () => _world.Now, SaveIni, ApplyHostSettings,
                          _cfg.Str("ChatKey", "T"), _cfg.Str("MenuKey", "F3"));
         _worldPort = new GameWorldPort(Log);
@@ -104,6 +111,9 @@ public sealed class BatCoopScript : Script
             catch (Exception e) { Log($"lab bridge failed: {e.Message}"); }
         }
         _labEnterWorld = _cfg.Bool("LabEnterWorld", false);
+        _labQuiet = _cfg.Bool("LabQuiet", false);
+        // A script reload in the middle of a game gets no OnEnterGame: a world with our pawn in it is entered.
+        try { if (LocalWorld.TryGetPawn() != null) _enteredWorld = BmSDK.Framework.Game.GetWorldInfo().Ptr; } catch { }
 
         if (_cfg.Bool("DisplayGuard", true))
         {
@@ -162,10 +172,11 @@ public sealed class BatCoopScript : Script
     void ApplyHostSettings(HostSettings s)
     {
         if (_session is not { IsHost: true }) return;
+        if (!PvpBridge.Available) s = s with { Pvp = false };
         _hostSettings = s;
         _session.SetHostSettings(s);
         foreach (var (k, v) in s.ToIni()) SaveIni(k, v);
-        Log($"host settings changed: PVP {(s.Pvp ? "on" : "off")}, damage {s.PvpDamagePercent}%");
+        Log($"host settings changed: tags {s.NameTags}, teleport {s.AllowTeleport}, skip {s.CutsceneSkip}, feed {s.EventFeed}");
     }
 
     void SaveIni(string key, string value)
@@ -195,7 +206,11 @@ public sealed class BatCoopScript : Script
 
     public bool BlockPause => _session is { InRoom: true };
 
-    public bool VoteInsteadOfSkip => _session is { InRoom: true } && !_skipping;
+    /// <summary>A skip press is a vote only in a co-op room and only while we watch a story cutscene. Everywhere
+    /// else (menus, loading movies, gameplay: left click is also bound to SkipCutscene) it goes to the game as it
+    /// is; 0.3.1 turned every click in a room into a vote, and a vote passed on the main menu made the game show
+    /// its "click to skip" prompt there.</summary>
+    public bool VoteInsteadOfSkip => _session is { InRoom: true } s && s.Vote.IsWatching && !_skipping;
 
     public void VoteSkip()
     {
@@ -204,13 +219,42 @@ public sealed class BatCoopScript : Script
         Toast("You voted to skip the cutscene");
     }
 
+    int _skipTries;
+    double _nextSkipTry;
+    bool _unskippable;       // the game did not skip this cutscene: no vote for it until it ends
+
     void DoSkip()
     {
         Log("cutscene vote passed: skipping");
+        _skipTries = 4;
+        _nextSkipTry = 0;
+    }
+
+    /// <summary>Asks the game to skip until the cutscene is over (a few tries, from the world tick).</summary>
+    void SkipTick(double now)
+    {
+        if (_skipTries <= 0 || now < _nextSkipTry) return;
+        if (!IsInCutscene()) { Log("cutscene skipped"); _skipTries = 0; return; }
+        _skipTries--;
+        _nextSkipTry = now + 0.6;
         _skipping = true;
-        try { BmSDK.Framework.Game.GetPlayerController().SkipCutscene(); }
+        try
+        {
+            // The game skips in two presses: the first shows "click to skip the cutscene", the second skips. Both
+            // go in at once (the passed vote was everyone's second press).
+            var pc = BmSDK.Framework.Game.GetPlayerController();
+            pc.SkipCutscene();
+            pc.SkipCutscene();
+            Log($"skip: asked the game ({_skipTries} tries left)");
+        }
         catch (Exception e) { Log("skip failed: " + e.Message); }
         finally { _skipping = false; }
+        if (_skipTries == 0 && IsInCutscene())
+        {
+            Log("skip: the game did not skip this cutscene");
+            _unskippable = true;
+            Toast("This cutscene can't be skipped");
+        }
     }
 
     // ---------- co-op room upkeep (every frame while in a room) ----------
@@ -250,6 +294,7 @@ public sealed class BatCoopScript : Script
         // The host's saved settings go to everyone when the room opens (and to each newcomer from the session).
         if (s.IsHost && !_settingsSent) { _settingsSent = true; s.SetHostSettings(_hostSettings); }
         s.Vote.HostDecides = s.Settings.CutsceneSkip == SkipMode.HostOnly;
+        if (!PvpBridge.Available) s.Pvp.Enabled = false; // an older host may still have PVP on: ignore it
 
         // No pause in multiplayer: the world keeps running behind menus and when the window loses focus. The
         // SetPause redirect refuses every pause; WorldInfo.Pauser is never cleared by hand, because the engine's
@@ -261,11 +306,13 @@ public sealed class BatCoopScript : Script
         }
         catch { }
 
-        // Cutscene vote: tell the host whether we are watching a cutscene.
-        bool watching = _labWatching ?? IsInCutscene();
-        s.Vote.LocalWatching(watching, s.IsHost, s.LocalId);
-
         var pawn = LocalWorld.TryGetPawn();
+        // Cutscene vote: tell the host whether we are watching a cutscene.
+        bool inCutscene = InGameWorld && pawn != null && IsInCutscene();
+        if (!inCutscene) _unskippable = false;
+        bool watching = _labWatching ?? (inCutscene && !_unskippable);
+        s.Vote.LocalWatching(watching, s.IsHost, s.LocalId);
+        SkipTick(now);
         if (!s.IsHost && _binder != null && pawn != null) _binder.Update(s.NpcGuest, pawn.Location, now);
 
         if (now >= _nextSlow)
@@ -320,6 +367,13 @@ public sealed class BatCoopScript : Script
         if (_labAnimLoop && call is { } c && s.Remotes.Values.FirstOrDefault() is { } rp) rp.Poses.Add(0, c, _world.Now);
     }
 
+    bool _labQuiet;          // lab: do nothing per frame but the lab bridge (is a crash ours or the game's?)
+
+    bool InGameWorld => _worldPtr != IntPtr.Zero && _enteredWorld == _worldPtr;
+
+    /// <summary>Cinematic mode, counted only inside a level with our pawn (the main menu is in cinematic mode too,
+    /// which is how 0.3.1 showed the vote there). IsMatineePlaing is no help: looping effect Matinees play all
+    /// the time.</summary>
     static bool IsInCutscene()
     {
         try { return BmSDK.Framework.Game.GetPlayerController().bCinematicMode; }
@@ -350,9 +404,11 @@ public sealed class BatCoopScript : Script
     {
         Log($"entered world '{SafeMapName()}'");
         ApplyRunInBackground();
-        _puppets?.Forget(); // actors from the previous world are gone with it
-        _pvp?.Forget();
-        if (_session != null) _binder?.ForgetAll(_session.NpcGuest);
+        // Actors from the previous world are gone with it: WorldStillOurs forgets them when the WorldInfo changed.
+        // Never forget actors of this same world: they would stay in it with nobody removing them (0.3.1 left the
+        // other player's puppet and an invisible PVP thug behind this way, and the game crashed seconds later).
+        WorldStillOurs();
+        _enteredWorld = _worldPtr;
         _worldPort?.OnWorldLoaded();
     }
 
@@ -512,6 +568,12 @@ public sealed class BatCoopScript : Script
             }
             catch (Exception e) { _displayResizeTries = 0; Log("display: resize failed: " + e.Message); }
         }
+        if (_labQuiet)
+        {
+            if (_labEnterAt > 0 && _world.Now >= _labEnterAt) { _labEnterAt = 0; EnterTestWorld(); }
+            ServeBridge();
+            return;
+        }
         try
         {
             PumpLinkStart();
@@ -525,6 +587,7 @@ public sealed class BatCoopScript : Script
             RoomTick();
             PoseTick();
             if (_traveling) { ServeBridge(); return; } // a level load started this frame: spawn and move nothing
+            if (!InGameWorld) { ServeBridge(); return; } // main menu or still loading: no puppets yet
             _puppets?.Update(_session, _world.WorldName, _world.Now);
             if (_puppets != null) _pvp?.Tick(_session, _puppets, _world.Now);
             ProbeTick();
@@ -600,6 +663,7 @@ public sealed class BatCoopScript : Script
     static void PostRenderRedirect(RHUD self)
     {
         self.PostRender();
+        if (Instance is { _labQuiet: true }) return;
         try { Instance?.WhilePausedTick(); } catch { }
         try { Instance?.DrawHud(self); } catch { }
     }
@@ -635,7 +699,7 @@ public sealed class BatCoopScript : Script
         var head = _session.InRoom ? (_session.IsHost ? "HOST" : $"PLAYER {_session.LocalId + 1}") : _session.State.ToString().ToUpperInvariant();
         Text($"BatCoop {Versions.Mod}  [{head}]  {_session.StatusText}", 255, 220, 90);
         if (!_session.InRoom) Text("F5 Host   F6 Join   F7 Leave   F8 Go to friend   F10 Invite   F9 Hide", 200, 200, 200);
-        else Text($"{_ui?.ChatKey} Chat   {_ui?.MenuKey} {(_session.IsHost ? "Host menu" : "Game settings")}{(_session.Settings.Pvp ? "   PVP ON" : "")}", 200, 200, 200);
+        else Text($"{_ui?.ChatKey} Chat   {_ui?.MenuKey} {(_session.IsHost ? "Host menu" : "Game settings")}{(PvpBridge.Available && _session.Settings.Pvp ? "   PVP ON" : "")}", 200, 200, 200);
 
         var pawn = LocalWorld.TryGetPawn();
         foreach (var rp in _session.Remotes.Values)
@@ -831,9 +895,11 @@ public sealed class BatCoopScript : Script
                 if (thugChar != null) thug.InitCharacter(thugChar);
                 return Ok(("key", thug.GetPathName(null)), ("char", thugChar?.GetPathName(null)));
             case "pvp":
-                return Ok(("pvp", _pvp!.LabState(s)), ("hooks_blocked", PvpHooks.BlockedAttacks), ("target_overrides", PvpHooks.TargetOverrides));
+                if (_pvp == null) return Ok(("available", false));
+                return Ok(("pvp", _pvp.LabState(s)), ("hooks_blocked", PvpHooks.BlockedAttacks), ("target_overrides", PvpHooks.TargetOverrides));
             case "pvpshow":
-                _pvp!.SetLabVisible(parts.Length < 2 || parts[1] != "off");
+                if (_pvp == null) return Ok(("available", false));
+                _pvp.SetLabVisible(parts.Length < 2 || parts[1] != "off");
                 return Ok(("visible", _pvp.LabVisible));
             case "settings":
                 // settings [pvp|damage|teleport|tags|skip|feed <value>]: the host menu's settings, as the host.
@@ -843,7 +909,7 @@ public sealed class BatCoopScript : Script
                     bool on = parts[2] is "on" or "1" or "true" or "host";
                     hs = parts[1] switch
                     {
-                        "pvp" => hs with { Pvp = on },
+                        "pvp" => hs with { Pvp = on && PvpBridge.Available },
                         "damage" => hs with { PvpDamagePercent = int.Parse(parts[2]) },
                         "teleport" => hs with { AllowTeleport = on },
                         "tags" => hs with { NameTags = on },

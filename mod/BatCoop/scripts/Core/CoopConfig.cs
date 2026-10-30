@@ -100,7 +100,7 @@ public sealed class CoopConfig
         MenuKey=F3
 
         # The host's game settings (also changed in the host menu, which saves them here).
-        # PVP: players can fight each other like thugs (strikes, counters, damage). Off unless the host turns it on.
+        # PVP is a draft and switched off in this version; these two keys are ignored for now.
         HostPvp=0
         HostPvpDamage=100
         HostAllowTeleport=1
