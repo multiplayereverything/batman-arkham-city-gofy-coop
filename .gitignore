@@ -16,3 +16,4 @@ link-*.log
 tools/sigdump/bin/
 tools/sigdump/obj/
 tools/sigdump/out/
+__pycache__/
