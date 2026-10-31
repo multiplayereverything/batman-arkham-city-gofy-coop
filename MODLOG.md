@@ -286,8 +286,37 @@ Tests at 0.3.2:
 - A skip press in a room outside a cutscene: not a vote (0/0), passed to the game.
 - Not tested: a vote skipping a real skippable story cutscene (none reachable in the lab without playing); two humans.
 
+## 0.4.0: NPC knock-outs and animations on guests, pause-menu input, player markers (2026-10-31)
+Report (user's two screenshots, CW): thugs the host had knocked out lay on the floor for the host and stood idle in a
+group for the guest.
+- Host side: a struck thug ends with health <= 0, `bDiedAlready`, `IsRagdoll()` true, physics `PHYS_None`, pose
+  "Normal Ragdoll/Relaxed" (lab `ko` + `npcprobe`). `RPawnVillain.bGoodAsDead` exists too; `NpcHostPort.IsDown` now
+  reads health, `bReallyDead`, `bGoodAsDead` and `bDiedAlready`.
+- Guest side (the actual bug): 0.3 copied a knock-out with `TakeDamage(health+1000, ..., damageType: null)`; the
+  game ignores a hit with no damage type, so the copy kept standing. 0.4 strikes with `BmGame.RDmgType_Strike` and
+  replays the host NPC's transitions; the copy ends health -1000, ragdoll true, pose Ragdoll/Relaxed, same as the
+  host (lab: real game as guest, bot host sending the recorded ragdoll stance).
+- NPC animation sync: `NpcMsg.Pose` carries a `PoseCall` per NPC transition (pose player `LastTransitionId` changes),
+  reliable; first pose of a newly shared NPC and the newcomer resend are stance-only. Guest replays after
+  `Buffer.Delay`. Guest copies walk with `PHYS_Walking` + `MoveTo` + pull (as player puppets) instead of `SetLocation`
+  on `PHYS_None`. `NpcAnimations=0` goes back to 0.3 behaviour. Protocol bumped to `batcoop-4`.
+- Pause menu: `PlayerController.SetPause(true)` is what a menu opening calls (refused in a room); BatCoop now records
+  it: until `SetPause(false)` the controller gets `IgnoreMoveInput/IgnoreLookInput(true)` and `_Console.InputKey`
+  swallows non-menu keys (presses only; releases pass so nothing sticks; Esc, Enter, Tab, arrows, F-keys, pad
+  Start/Back/A/B/D-pad pass). Scaleform sees input before the console, so menus still work. `PlayerFlags.InMenu`.
+- Player markers (`Game/Tracker.cs`): canvas markers with name, distance, height, edge arrows, plus a radar (top-down,
+  camera yaw up, range from the farthest player, 50 m to 1 km). F4 cycles all/screen/off (`Markers=`).
+  The game's map screen (`OpenLevelUpOrMap`, a BackScreen; close with `CloseBackScreen`) showed neither a spawned
+  `RObjectiveMarker` (spawned hidden; unhidden made no difference) nor a moved `PlayerWaypoint` (`UpdatePlayerWaypoint`
+  turned `IsMarkerActive` back off): it draws from its own mission/waypoint data. The HUD is not drawn over it.
+- Rendering crashes while testing: "Rendering thread exception" in dgVoodoo2's `D3D9.dll` (file version 4.9.0.904,
+  always offset 0x31ca5), on lab copies only: two copies started together (16:06), and ~30 s after a hot reload
+  (16:11); also once on 10-29 during lab work. Memory was fine (2.1 GB of 4 GB, exe is large-address-aware). Lab
+  rule now: one real copy at a time, restart instead of hot reload for long runs.
+- Rule learned: teleporting the lab player next to Outcasts gets Batman beaten to a game over; stand 10+ m away.
+
 ## Handoff (start here in a new session)
-- Repo: `multiplayereverything/batman-arkham-city-gofy-coop`, branch `main`, version 0.3.2, protocol `batcoop-3`.
+- Repo: `multiplayereverything/batman-arkham-city-gofy-coop`, branch `main`, version 0.4.0, protocol `batcoop-4`.
 - Game: `F:\SteamLibrary\steamapps\common\Batman Arkham City GOTY`, BmSDK 0.21, dgVoodoo2 installed.
 - Build/deploy: `python -I lab/build.py all`, `python -I lab/deploy.py install` (hot reload; a reload ends the
   co-op room, so re-host). One test copy: `python -I lab/launch.py start host` / `stop`.
@@ -303,5 +332,6 @@ Tests at 0.3.2:
   Windows Application log (".NET Runtime" events).
 - PVP is shelved (draft, `PvpBridge.Available=false`); do not re-enable unless the user asks. When it comes back: find
   which PvpHooks redirect breaks CW first, keep it thug-based, make it safe to toggle at any time.
-- Open items: real two-player test (user + friend); a vote skip of a real story cutscene; audio while paused by ear;
-  glide/grapple animation; animated puppet spikes on sharp turns.
+- Lab: one real game copy at a time (two copies crash dgVoodoo2's D3D9.dll); NPC research: `npcprobe [n]`, `ko [dmgclass]`,
+  `npcdown strike|pose|goodasdead|ragdoll`, `npcs`; menus: `menu`, `pause`/`unpause`; markers: `markers [all|screen|off]`.
+- Open items: real two-player test (user + friend); players on the game's own map screen (Scaleform, needs RE); a vote skip of a real story cutscene; glide/grapple animation; puppet spikes on sharp turns.

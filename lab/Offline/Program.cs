@@ -414,6 +414,20 @@ Run("npc_sync", () =>
     }
     Check("npc_motion", worst < 30, $"guest NPC copies stay on the host's paths (worst {worst:0.0} uu over {n} samples)");
 
+    // NPC animations: a new transition on the host (a strike, a knock-down) reaches the guest's copy once; the
+    // first pose of a newly shared NPC is its stance only.
+    var animMirror = g.Mirrors.Values.First(m => m.Info.Key == near2.Key);
+    bool stanceFirst = TickUntil(all, () => animMirror.Poses.Received >= 1, 3);
+    var firstPose = animMirror.Poses.TryTake(double.MaxValue, 0, out var fp) ? fp : default;
+    near2.Pose = near2.Pose with { Type = PoseTransition.Relative, Clip = "BmAnims.Thug_KnockDown:AnimSequence_3", Transition = "KnockDown" };
+    near2.TransitionId++;
+    bool relayed = TickUntil(all, () => animMirror.Poses.Received >= 2, 3);
+    TickFor(all, 0.5);
+    var strikePose = animMirror.Poses.TryTake(double.MaxValue, 0, out var sp) ? sp : default;
+    Check("npc_anim_relay", stanceFirst && firstPose.Clip == "" && relayed && animMirror.Poses.Received == 2 && strikePose.Clip.EndsWith("AnimSequence_3")
+                           && strikePose.Type == PoseTransition.Relative && host.Session.NpcHost.PosesSent == 3,
+        $"stance first ({firstPose.Movement}, no clip), then the host NPC's knock-down clip once ({animMirror.Poses.Received} received, host sent {host.Session.NpcHost.PosesSent})");
+
     // A guest's punch is an intent: the host applies it exactly once and the result comes back as state.
     var mirror = g.Mirrors.Values.First(m => m.Info.Key == near1.Key);
     guest.Session.NpcGuest.SendHit(new NpcHit(mirror.Info.Id, 100, mirror.Latest.Pos, new(0, 0, 50), "RDmgType_Punch", 0));

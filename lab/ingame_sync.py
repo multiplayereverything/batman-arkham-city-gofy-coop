@@ -93,6 +93,9 @@ def in_world(s):
     return s.get("pawn") and s.get("map", "").lower() not in ("", "frontend")
 
 
+KO_CLIP = ""
+
+
 def run_a():
     log("=== run A: the real game hosts, a bot joins as the guest")
     game("leave")
@@ -147,6 +150,30 @@ def run_a():
                   f"the guest's hit on {target['Key'].split(':')[-1]} was applied by the real host ({gn['hits_applied']} hit(s)); "
                   f"health {before} -> {after and [m['health'] for m in after['npc_mirrors'] if m['Key'] == target['Key']][0]}")
 
+        # A knock-out on the host reaches the guest as state (0.3.2 only looked at health, which a beaten thug keeps),
+        # and the host NPC's animations (its knock-down among them) are sent along.
+        # Knock-outs happen close to a player: far away the game neither ragdolls nor animates the NPC. Stand 4 m
+        # from the nearest one (closer and it starts a fight), knock it out, then go back.
+        home = game("state")["pos"]
+        near = [n for n in game("npcprobe 8")["npcs"] if n["live"] and not n["down"]][0]
+        game(f"tp {near['pos'][0] - 400} {near['pos'][1]} {near['pos'][2] + 60}")
+        time.sleep(1)
+        ko = game("ko")
+        bs = wait(lambda: bot("state"), lambda s: any(m["Key"] == ko.get("key") and m["down"] for m in s["npc_mirrors"]), 10, "knock-out at guest")
+        # The knock-down's own transition follows a few frames after the "down" state.
+        bs = wait(lambda: bot("state"), lambda s: any(m["Key"] == ko.get("key") and m["poses"] >= 2 for m in s["npc_mirrors"]), 5, "knock-down pose") or bs
+        gn = game("npcs")
+        check("A_npc_knockout_to_guest", ko.get("ok") and bs,
+              f"the real host knocked out {ko.get('key', '?').split('.')[-1]} (health {ko.get('health')}, down {ko.get('down')}); "
+              f"the guest sees it down: {bool(bs)}")
+        km = bs and [m for m in bs["npc_mirrors"] if m["Key"] == ko.get("key")][0]
+        game(f"tp {home[0]} {home[1]} {home[2]}")
+        check("A_npc_anims_to_guest", gn["poses_sent"] > 0 and bs and sum(m["poses"] for m in bs["npc_mirrors"]) > len(bs["npc_mirrors"]),
+              f"the host sent {gn['poses_sent']} NPC transitions; the guest got {bs and sum(m['poses'] for m in bs['npc_mirrors'])}, "
+              f"the knocked-out NPC's last clip: {km and km['last_clip'].split('.')[-1]}")
+        global KO_CLIP
+        KO_CLIP = km["last_clip"] if km and km["last_clip"] else ""
+
         skips0 = game("vote")["skips_done"]
         game("watch on")
         bot("watch on")
@@ -166,6 +193,21 @@ def run_a():
         check("A_no_pause", not g2["paused"] and g2["time"] > g1["time"] + 1.5,
               f"after a pause command the world still runs: game time {g1['time']:.1f} -> {g2['time']:.1f} in 2 s "
               f"(pauses refused so far: {g2['blocked_total']})")
+
+        # The pause above was refused, but the game asked for it, which is how a menu opening looks: until the menu
+        # closes (the game unpauses) the player's own character ignores input while the world runs on.
+        gm = game("menu")
+        game("unpause")
+        gm2 = wait(lambda: game("menu"), lambda s: not s["in_menu"], 5, "menu closed")
+        check("A_menu_blocks_input", gm["in_menu"] and gm["move_ignored"] and gm["look_ignored"] and gm["would_swallow_w"]
+              and gm["would_swallow_lmb"] and not gm["would_swallow_esc"] and not gm["would_swallow_release"]
+              and gm2 and not gm2["move_ignored"] and not gm2["look_ignored"],
+              f"menu open: move/look ignored {gm['move_ignored']}/{gm['look_ignored']}, W and mouse swallowed, Escape and key releases "
+              f"pass; after the unpause input is back: {gm2 and not gm2['move_ignored']}")
+
+        gk = wait(lambda: game("markers"), lambda s: any(k != "1" and v.startswith("radar") for k, v in s["drawn"].items())
+                  and "1" in s["drawn"], 5, "player markers")
+        check("A_player_marker", gk, f"the bot guest is drawn on screen and on the radar: {gk and gk['drawn']}")
 
         dump = game("npcdump 14")["npcs"]
         path = os.path.join(OUT, "npcs.json")
@@ -224,6 +266,19 @@ def run_b(npcs_path, skip_travel):
             check("B_npcs_move_with_host", len(moved) > 0, f"{len(moved)} of {len(gn2['mirror_list'])} game NPCs moved with the host's NPCs in 2 s")
         else:
             check("B_npcs_bound_in_game", False, "no NPC was bound")
+
+        if gn:
+            target = [m for m in gn["mirror_list"] if m["bound"]][0]
+            bot(f"npc_ko {target['key']} {KO_CLIP}".strip())
+            gk = wait(lambda: game("npcs"), lambda s: any(m["id"] == target["id"] and m["local_down"] for m in s["mirror_list"]), 10, "knock-out in game")
+            tm = gk and [m for m in gk["mirror_list"] if m["id"] == target["id"]][0]
+            check("B_npc_knockout_in_game", gk and tm["local_down"],
+                  f"the bot host knocked out {target['key'].split('.')[-1]}; the real guest's copy went down ({tm and tm['down_how']}), "
+                  f"{tm and tm['replayed']} host transitions replayed (knock-down clip {KO_CLIP.split('.')[-1] or 'none recorded'}; error '{tm and tm['replay_error']}')")
+            time.sleep(2)
+            gk2 = game("npcs")
+            tm2 = [m for m in gk2["mirror_list"] if m["id"] == target["id"]]
+            check("B_npc_stays_down", tm2 and tm2[0]["local_down"], f"2 s later the copy is still down: {tm2 and tm2[0]['local_down']}")
 
         gh = game("hit 4")
         hits = wait(lambda: bot("hits"), lambda s: len(s["hits"]) > 0, 10, "hit at bot host")

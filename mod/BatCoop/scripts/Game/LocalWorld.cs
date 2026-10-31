@@ -57,6 +57,9 @@ public sealed class LocalWorld : ICoopWorld
             _info = new PlayerInfo(PlayerName, ch, cls, world);
     }
 
+    /// <summary>Set by the script: our pause menu is open in a co-op game.</summary>
+    public bool InMenu;
+
     public bool TryReadLocal(out PlayerState s)
     {
         s = default;
@@ -69,6 +72,7 @@ public sealed class LocalWorld : ICoopWorld
         if (pawn.Health <= 0) flags |= PlayerFlags.Dead;
         if (pawn.bHidden) flags |= PlayerFlags.Hidden;
         if (pawn.bGliding) flags |= PlayerFlags.Gliding;
+        if (InMenu) flags |= PlayerFlags.InMenu;
 
         s.Pos = pawn.Location;
         s.Yaw = SnapshotBuffer.Normalize(rot.Yaw);

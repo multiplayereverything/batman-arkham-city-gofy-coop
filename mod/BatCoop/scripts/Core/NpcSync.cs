@@ -2,6 +2,8 @@
 // NPCs are owned by the host (coop-anything playbook/actor-ownership.md, "one host runs all AI"): the host streams
 // every NPC near any player; guests show those NPCs as remote-driven copies and keep their own AI frozen.
 // Results are copied, not events: a knocked-out NPC is sent as state, and a guest's hit is an intent the host applies.
+// Each NPC's animation transitions (strikes, hit reactions, knock-downs, getting up) are sent like a player's
+// (Core/AnimSync.cs), so a guest sees the host's fight play out, not just the NPCs sliding to their spots.
 using System;
 using System.Collections.Generic;
 using System.Numerics;
@@ -9,7 +11,7 @@ using System.Numerics;
 namespace BatCoop.Core;
 
 [Flags]
-public enum NpcFlags : byte { None = 0, Down = 1, Hidden = 2, InCombat = 4 }
+public enum NpcFlags : byte { None = 0, Down = 1, Hidden = 2, InCombat = 4, Ragdoll = 8 }
 
 /// <summary>How an NPC is identified and rebuilt on another machine.</summary>
 /// <param name="Key">The pawn's object path on the host (level-placed NPCs have the same path everywhere).</param>
@@ -28,7 +30,8 @@ public struct NpcState
 
 /// <summary>One NPC as the host's game sees it.</summary>
 /// <param name="Handle">Stable for the actor's lifetime (the engine object address).</param>
-public readonly record struct NpcSample(long Handle, string Key, string PawnClass, string CharacterClass, NpcState State);
+/// <param name="TransitionId">The pose player's transition counter: a new value means a new animation started.</param>
+public readonly record struct NpcSample(long Handle, string Key, string PawnClass, string CharacterClass, NpcState State, int TransitionId = 0);
 
 public interface INpcHostPort
 {
@@ -36,11 +39,13 @@ public interface INpcHostPort
     IEnumerable<NpcSample> Sample();
     /// <summary>Apply a guest's hit to the host NPC behind this handle.</summary>
     void ApplyHit(long handle, in NpcHit hit);
+    /// <summary>The transition the NPC behind this handle just started (called only when its id changed).</summary>
+    PoseCall? ReadPose(long handle);
 }
 
 public readonly record struct NpcHit(uint NpcId, int Damage, Vector3 HitLocation, Vector3 Momentum, string DamageType, byte Attacker);
 
-public enum NpcMsg : byte { Info = 1, Gone = 2, States = 3, Hit = 4, Epoch = 5 }
+public enum NpcMsg : byte { Info = 1, Gone = 2, States = 3, Hit = 4, Epoch = 5, Pose = 6 }
 
 /// <summary>Host side: decides which NPCs are shared, numbers them, streams them.</summary>
 public sealed class NpcHost
@@ -49,7 +54,9 @@ public sealed class NpcHost
     readonly Action<byte, bool, byte[]> _send;
     readonly Dictionary<long, uint> _ids = [];
     readonly Dictionary<uint, (long handle, NpcInfo info)> _shared = [];
-    uint _nextId = 1;
+    readonly Dictionary<uint, int> _transition = [];
+    readonly Dictionary<uint, PoseCall> _pose = [];
+    uint _nextId = 1, _poseSeq;
     double _nextSend;
 
     public NpcHost(Action<byte, bool, byte[]> send) => _send = send;
@@ -60,11 +67,16 @@ public sealed class NpcHost
     public uint Epoch { get; private set; } = 1;
     public int SharedCount => _shared.Count;
     public long HitsApplied { get; private set; }
+    public long PosesSent { get; private set; }
+    /// <summary>Send NPC animations (off: positions and results only, like 0.3).</summary>
+    public bool SendPoses = true;
 
     public void Reset()
     {
         _ids.Clear();
         _shared.Clear();
+        _transition.Clear();
+        _pose.Clear();
         Epoch++;
         _send(PeerIds.Everyone, true, new WireWriter().U8(Channel).U8((byte)NpcMsg.Epoch).U32(Epoch).ToArray());
     }
@@ -74,7 +86,11 @@ public sealed class NpcHost
     {
         _send(to, true, new WireWriter().U8(Channel).U8((byte)NpcMsg.Epoch).U32(Epoch).ToArray());
         foreach (var (_, (_, info)) in _shared) _send(to, true, EncodeInfo(Epoch, info));
+        // The newcomer gets each NPC's current stance; replaying a strike that is already over would be wrong.
+        foreach (var (id, call) in _pose) _send(to, true, EncodePose(Epoch, id, Stance(call), ++_poseSeq));
     }
+
+    static PoseCall Stance(PoseCall c) => c with { Type = PoseTransition.Normal, Transition = "", Clip = "", ClipName = "", UpperClip = "" };
 
     public void Tick(INpcHostPort port, IReadOnlyList<Vector3> players, double now)
     {
@@ -104,6 +120,19 @@ public sealed class NpcHost
                 _send(PeerIds.Everyone, true, EncodeInfo(Epoch, info));
             }
             seen.Add(id);
+            if (SendPoses && (!_transition.TryGetValue(id, out var tid) || tid != s.TransitionId))
+            {
+                bool first = !_transition.ContainsKey(id);
+                _transition[id] = s.TransitionId;
+                if (port.ReadPose(s.Handle) is { } call)
+                {
+                    // A newly shared NPC is somewhere in the middle of its animation: send only its stance.
+                    if (first) call = Stance(call);
+                    _pose[id] = call;
+                    PosesSent++;
+                    _send(PeerIds.Everyone, true, EncodePose(Epoch, id, call, ++_poseSeq));
+                }
+            }
             var st = s.State;
             st.Id = id;
             states.Add(st);
@@ -113,6 +142,8 @@ public sealed class NpcHost
             if (seen.Contains(id)) continue;
             _ids.Remove(_shared[id].handle);
             _shared.Remove(id);
+            _transition.Remove(id);
+            _pose.Remove(id);
             _send(PeerIds.Everyone, true, new WireWriter().U8(Channel).U8((byte)NpcMsg.Gone).U32(Epoch).U32(id).ToArray());
         }
         for (int i = 0; i < states.Count; i += MaxPerPacket)
@@ -134,6 +165,9 @@ public sealed class NpcHost
         port.ApplyHit(e.handle, hit);
         HitsApplied++;
     }
+
+    static byte[] EncodePose(uint epoch, uint id, PoseCall call, uint seq) =>
+        new WireWriter().U8(Channel).U8((byte)NpcMsg.Pose).U32(epoch).U32(id).Bytes(call.Encode(seq)).ToArray();
 
     static byte[] EncodeInfo(uint epoch, NpcInfo i) =>
         new WireWriter().U8(Channel).U8((byte)NpcMsg.Info).U32(epoch).U32(i.Id).Str(i.Key).Str(i.PawnClass).Str(i.CharacterClass).ToArray();
@@ -162,6 +196,8 @@ public sealed class NpcMirror(NpcInfo info)
 {
     public NpcInfo Info { get; } = info;
     public SnapshotBuffer Buffer { get; } = new() { Delay = 0.15 };
+    /// <summary>The host NPC's animation transitions, replayed after the same delay as its positions.</summary>
+    public PoseQueue Poses { get; } = new();
     public NpcState Latest;
     public long States;
     /// <summary>The game layer's local actor for this NPC (matched or spawned), or null.</summary>
@@ -211,6 +247,13 @@ public sealed class NpcGuest
             case NpcMsg.Info:
                 var info = new NpcInfo(r.U32(), r.Str(), r.Str(), r.Str());
                 if (!_mirrors.ContainsKey(info.Id)) _mirrors[info.Id] = new NpcMirror(info);
+                break;
+            case NpcMsg.Pose:
+                uint pid = r.U32();
+                var pr = new WireReader(r.Bytes());
+                pr.U8(); // GameMsg.Anim
+                var call = PoseCall.Decode(ref pr, out var seq);
+                if (_mirrors.TryGetValue(pid, out var pm)) pm.Poses.Add(seq, call, now);
                 break;
             case NpcMsg.Gone:
                 if (_mirrors.Remove(r.U32(), out var gone)) Removed.Add(gone);

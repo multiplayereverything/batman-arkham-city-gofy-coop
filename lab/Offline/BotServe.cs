@@ -113,6 +113,17 @@ public static class BotServe
                             bot.Session.NpcGuest.SendHit(new NpcHit(m.Info.Id, int.Parse(p[2]), m.Latest.Pos, Vector3.Zero, "", 0));
                             ans = J(new { ok = true, npc = m.Info.Key });
                             break;
+                        case "npc_ko":
+                            // npc_ko KEYPART [CLIP]: the bot host's NPC is knocked out, playing CLIP (a real knock-down clip from run A).
+                            var ko = npcs.All.FirstOrDefault(x => x.Key.Contains(p[1], StringComparison.OrdinalIgnoreCase));
+                            if (ko == null) { ans = J(new { ok = false, error = "no npc like " + p[1] }); break; }
+                            ko.Health = 0;
+                            ko.Speed = 0;
+                            // What a real host sends for a knocked-out NPC (run A: "Normal Ragdoll/Relaxed").
+                            ko.Pose = ko.Pose with { Type = PoseTransition.Normal, Movement = "Ragdoll", Weapon = "Relaxed", Clip = p.Length > 2 ? p[2] : "", Transition = "" };
+                            ko.TransitionId++;
+                            ans = J(new { ok = true, npc = ko.Key });
+                            break;
                         case "watch": watching = p.Length < 2 || p[1] != "off"; ans = J(new { ok = true, watching }); break;
                         case "vote": bot.Session.Vote.LocalVote(bot.Session.IsHost, bot.Session.LocalId); ans = J(new { ok = true }); break;
                         case "hits": ans = J(new { ok = true, hits = npcs.All.Where(n => n.Hits.Count > 0).Select(n => new { n.Key, count = n.Hits.Count, damage = n.Hits.Sum(h => h.Damage), attacker = n.Hits[0].Attacker }) }); break;
@@ -130,7 +141,8 @@ public static class BotServe
                                 flags = story.Values.Values.Where(v => v.Kind == WorldValueKind.Flag && v.Int != 0).Select(v => v.Key[2..]).OrderBy(x => x).ToList(),
                                 ints = story.Values.Values.Where(v => v.Kind == WorldValueKind.Int).ToDictionary(v => v.Key, v => v.Int),
                                 map = story.Values.TryGetValue("lvl:map", out var mp) ? mp.Str : "",
-                                npc_mirrors = bot.Session.NpcGuest.Mirrors.Values.Select(x => new { x.Info.Id, x.Info.Key, x.States, down = (x.Latest.Flags & NpcFlags.Down) != 0, health = x.Latest.Health }),
+                                npc_mirrors = bot.Session.NpcGuest.Mirrors.Values.Select(x => new { x.Info.Id, x.Info.Key, x.States, down = (x.Latest.Flags & NpcFlags.Down) != 0, health = x.Latest.Health,
+                                    poses = x.Poses.Received, last_clip = x.Poses.Newest?.Clip ?? "" }),
                                 npc_shared = bot.Session.NpcHost.SharedCount, npc_hits_applied = bot.Session.NpcHost.HitsApplied,
                                 vote = new { votes = bot.Session.Vote.Votes, needed = bot.Session.Vote.Needed, skips },
                             });

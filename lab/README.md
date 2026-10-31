@@ -72,3 +72,22 @@ Catwoman's level at the start of a new game (the 0.3.1 crash): exec
 `start batentry?Area=CW,CW_C1?Chapters=1,1z,Z1?Start=CW_Start?NoFadeIn?NoFadeOut?Players=Playable_Catwoman?Flags=Batman_RiddlesDisabled`
 (add `Movie=0_CW_Intro?StreamMovie?` for the intro movie). Crash stacks are in the Windows Application log (".NET Runtime").
 
+
+## 0.4.0 additions
+| Check / tool | What it shows |
+|---|---|
+| `A_npc_knockout_to_guest` | The real host knocks out its nearest NPC (`ko`, a real `RDmgType_Strike` hit); the bot guest sees it down. |
+| `A_npc_anims_to_guest` | The host sends NPC animation transitions (`NpcMsg.Pose`); the bot guest receives the knock-down pose. |
+| `A_menu_blocks_input` | After a (refused) pause, as a menu opening does: move and look input ignored, W and mouse swallowed, Esc and key releases pass; after `unpause` input is back. |
+| `A_player_marker` | The bot guest is drawn as a screen marker (or edge arrow) and on the radar. |
+| `B_npc_knockout_in_game` / `B_npc_stays_down` | The bot host knocks out an NPC (`npc_ko`, sending the recorded "Ragdoll/Relaxed" stance); the real guest's copy goes down and stays down. |
+| offline `npc_anim_relay` | Stance first for a newly shared NPC, then one knock-down clip per new transition. |
+
+Bridge commands: `npcprobe [n]` (health, down, ragdoll, pose of the nearest NPCs), `ko [damage class]`,
+`npcdown strike|pose|goodasdead|ragdoll` (how a guest copies a knock-out), `menu`, `markers [all|screen|off]`
+(what the HUD drew last frame), `openmap` (the game's map screen; close with `call pc CloseBackScreen`). Bot command: `npc_ko KEY [clip]`.
+
+**Run one real game copy at a time.** Two copies on this PC (Intel graphics through dgVoodoo2's `D3D9.dll`) crashed
+the render thread ("Rendering thread exception", d3d9.dll offset 0x31ca5), and so did a hot reload once; restart the
+copy instead of hot-reloading before long runs. Do not teleport the lab player next to hostile NPCs: Batman gets
+beaten to a game over (`batentry`, no pawn) and the bridge then has nothing to drive.

@@ -4,9 +4,10 @@ by NickBin (RealAnxiousGit)
 Roam Arkham City together. Every player runs their own game and sees the other players move through the
 city in real time. Friends join over Steam without opening ports, or over a direct IP address on a LAN or VPN.
 
-Status: **0.3.2, early**. Players walk, run and fight with the game's own animations; the story, missions, NPCs and
-cutscene skips are shared; there is a chat and a host menu. See "What syncs" below. PVP is switched off in 0.3.2 and
-kept as a draft for a later version (see "PVP (draft, off)").
+Status: **0.4.0, early**. Players walk, run and fight with the game's own animations; the story, missions, NPCs (with
+their fights and knock-outs) and cutscene skips are shared; markers on screen and a radar show where the other
+players are; there is a chat and a host menu. See "What syncs" below. PVP is switched off and kept as a draft for a
+later version (see "PVP (draft, off)").
 
 ## Requirements
 - Batman: Arkham City GOTY, Steam version (Epic should work with BmSDK but is untested here; GOG is not supported by BmSDK).
@@ -24,14 +25,29 @@ https://github.com/dege-diosg/dgVoodoo2/
 2. Copy the `BatCoop` folder into `<game folder>\BmGame\Mods\`, so you have
    `BmGame\Mods\BatCoop\mod.toml`, `scripts\` and `link\BatCoopLink.exe`.
 3. Start the game normally. BmSDK compiles BatCoop at start-up; `Binaries\Win32\BmSDK.log` says
-   `[BatCoop] ... compiled` and `BatCoop 0.3.2 ... loaded`.
+   `[BatCoop] ... compiled` and `BatCoop 0.4.0 ... loaded`.
 
-Updating from 0.2 or an older 0.3: replace the whole `BatCoop` folder but keep your `BatCoop.ini`. Everyone in a game
-needs 0.3.x (0.2 and 0.3 refuse each other with "Version mismatch"). 0.3.x versions play together, but **everyone
-should update to 0.3.2**: older versions can crash at the start of a new game (Catwoman's level), and a 0.3.0/0.3.1
-host can still turn PVP on for itself.
+Updating from an older version: replace the whole `BatCoop` folder but keep your `BatCoop.ini`. **Everyone in a game
+needs 0.4.0**: 0.4 and 0.3 refuse each other with "Version mismatch" (the NPC messages changed).
 
-**0.3.2 fixes:** the game crashing a few seconds after loading Catwoman's level at the start of a new game (it was
+**0.4.0:**
+- **Knocked-out enemies now go down for guests too.** The guest's copy of a thug the host knocked out was "knocked
+  out" with an empty hit the game ignored, so guests saw the host's knocked-out thugs standing. Now the host also
+  reads the game's own "dead / knocked out" marks (not only health), and the guest's copy is knocked out with a real
+  strike and goes into the host's ragdoll pose.
+- **Enemies fight on the guest's screen the way they do on the host's**: every NPC animation (attacks, hit reactions,
+  knock-downs, idle actions) is sent like a player's, and the guest's copies walk and run with the game's own movement
+  animations instead of sliding to their spots.
+- **The pause menu stops your character.** The world still keeps running for everyone, but while your pause menu
+  (or map, upgrades...) is open, your movement, camera and gameplay keys do nothing; menu keys and Esc still work.
+  Other players see "(in menu)" next to your name.
+- **Find each other:** a marker over every other player shows their name, distance and height, through walls; when
+  they are off screen it sits on the edge of the screen pointing the way. A radar on the right of the screen
+  shows everyone around you from above (the way you look is up) with names. **F4** switches: markers and radar,
+  markers only, off. The game's own map screen cannot show other players (it only draws the game's own mission
+  icons), so the radar stands in for it; it is hidden while the map screen is open.
+
+**0.3.2 fixed:** the game crashing a few seconds after loading Catwoman's level at the start of a new game (it was
 BatCoop's PVP hooks, which were active even with PVP off); "Click to skip the cutscene" showing on the main menu; a
 skip vote that passed without skipping; every left click in a co-op game counting as a skip vote; and the other
 player's character (and a hidden PVP thug) sometimes being left behind in a level that had just loaded.
@@ -49,11 +65,12 @@ Load your story save (everyone in the open world), then:
 | **F8** | Go to your friend (teleports you next to the nearest player). The host can turn this off. |
 | **F10** | Host only: copy the lobby id to the clipboard for a friend who cannot find you with F6. |
 | **F9** | Hide or show the BatCoop overlay. |
+| **F4** | Player markers: on screen and radar, on screen only, or off (saved as `Markers=` in `BatCoop.ini`). |
 | **T** | In a co-op game: open the chat. Type, **Enter** sends, **Esc** cancels. |
 | **F3** | In a co-op game: the host menu (the host changes settings; guests see them). |
 
 The chat and host menu keys can be changed in the host menu (rows "Chat key" and "Host menu key": select, press
-Enter, press the new key) or in `BatCoop.ini` (`ChatKey=`, `MenuKey=`, Unreal key names such as `T`, `Y`, `F4`).
+Enter, press the new key) or in `BatCoop.ini` (`ChatKey=`, `MenuKey=`, Unreal key names such as `T`, `Y`, `F2`).
 **Note about T:** in Arkham City's own controls T is the "secondary group combat move" (a special combo
 takedown). In a co-op game BatCoop takes T for the chat, so that move needs another key there; outside a co-op game
 T works as before. If you would rather keep T for combat, set another chat key. BatCoop's keys are not in the
@@ -66,7 +83,7 @@ Your name is your Steam name unless you set `Name=` in `BatCoop.ini` (0.2 showed
 
 Settings are in `BmGame\Mods\BatCoop\BatCoop.ini` (created on first start): your name, `Transport=steam|direct`,
 `DirectAddress`, `DirectPort`, `MaxPlayers` (2-8, default 4), `LinkPort`, the chat and menu keys, the host's saved
-settings (`Host...` keys) and `PuppetMode`.
+settings (`Host...` keys), `PuppetMode`, `Markers` and `NpcAnimations`.
 
 ## How a co-op game works
 **The host's game is the story.** When you join, your story state (flags, chapter, side missions, objectives) is
@@ -76,14 +93,16 @@ changed by the co-op game until that guest saves it.
 - **Missions:** everyone is always on the same mission. If any player starts a mission (walks into its trigger,
   finishes a step), the host takes it over and it starts for everyone at the same time. If the host goes into
   another map, guests are loaded into the same map.
-- **NPCs:** the host's game runs every enemy and character near any player. On a guest, those NPCs move the way
-  the host's do, and the guest's own copies of them stand still under the host's control. When a guest hits an
-  enemy, the hit is sent to the host, which applies it; the result (health, knocked out) comes back to everyone.
+- **NPCs:** the host's game runs every enemy and character near any player. On a guest, the guest's own copies of
+  them have no AI: they walk, fight, react and fall as the host's NPCs do. When a guest hits an enemy, the hit is
+  sent to the host, which applies it; the result (the hit reaction, health, knocked out) comes back to everyone.
 - **Other players** walk, run, sprint, turn and stop with the game's own movement animations, and their strikes,
   counters, hit reactions, takedowns and stance changes play on their character on your screen. When they glide,
   grapple or fall, their character follows their exact position instead.
 - **No pause:** in a co-op game nobody can pause the world, from the pause menu, the map, or by switching windows.
-  Menus still open; the city keeps moving behind them.
+  Menus still open; the city keeps moving behind them, but your own character ignores your keys, mouse and pad until
+  you close the menu.
+- **Finding each other:** markers on screen and a radar (F4), and F8 to go to your friend.
 - **Cutscenes:** during a story cutscene in a level, pressing skip is a vote. The overlay shows "Cutscene: 1/2 voted
   to skip"; when everyone watching has voted, the cutscene is skipped for everyone at the same moment. The host can
   set this to "host only". Anywhere else (menus, loading movies, normal play) the skip key works as in the normal
@@ -119,7 +138,7 @@ with a real thug attack (counter icon, counter window), and either they counter 
 hit lands. Each player also has an invisible stand-in thug inside their character on your screen, so freeflow
 combat aims at them and the counter icon shows over them.
 
-## What syncs (0.3.2)
+## What syncs (0.4.0)
 | Synced | How |
 |---|---|
 | Every player's position, facing and velocity | 20 times a second, smoothed on the other machines (100 ms interpolation, short extrapolation, teleports snap) |
@@ -129,7 +148,11 @@ combat aims at them and the counter icon shows over them.
 | Story flags (missions, doors, events), chapter, 26 side-mission chapters, objectives | Host reads them 4 times a second and sends every change as one numbered step; guests apply steps in order. Joiners get a snapshot; every 5 s guests send a check value and the host repairs any difference |
 | A guest's own progress (a mission it starts, a step it completes) | Sent to the host as a request; the host applies it and it comes back to everyone (flags only switch on, chapters only go up this way; anything a guest loses is restored by the host) |
 | The host's map | Guests travel to it with the host's own start URL |
-| NPCs within 60 m of any player | Host streams position, facing, speed, health, knocked-out and hidden 10 times a second; guests drive the same level NPC, or spawn one of the same class and character |
+| NPCs within 60 m of any player | Host streams position, facing, speed, health, knocked-out, ragdoll and hidden 10 times a second; guests drive the same level NPC (or spawn one of the same class and character) with the game's movement animations |
+| NPC animations | Every new animation transition of a shared NPC (attacks, hit reactions, knock-downs, idle actions) is sent once and replayed on the guest's copy after the same delay as its position; a guest that joins later gets each NPC's current stance |
+| Knock-outs | A thug is down when the game marks it dead or knocked out (not only at 0 health); the guest's copy is knocked out once with a real strike and stays down |
+| Player whereabouts | Markers on screen (name, distance, height, edge arrows) and a radar with every player around you |
+| Pause menu | While yours is open, your character ignores input; others see "(in menu)" |
 | Hits on NPCs | Guest hits become requests the host applies once; stale requests from before a reshuffle are ignored |
 | Host settings | Host -> everyone, on change and on join |
 | Pause | Refused in a co-op game; focus pause is switched off |
@@ -138,9 +161,9 @@ combat aims at them and the counter icon shows over them.
 
 **Not synced yet:** the moment-to-moment state of physics objects and gadgets, Riddler collectibles beyond their
 story flags, gliding and grappling animations (the character follows the exact position there, in its last pose),
-and NPC attack animations on guests (they move and get knocked out, but do not play the host's attack animations).
+and exactly where a ragdolled body comes to rest (each game lets it fall by itself, close to where the host's lies).
 
-**Known limits of 0.3.2** (please report what you see):
+**Known limits of 0.4.0** (please report what you see):
 - Not yet tested with two real players (see MODLOG): the two-player parts were tested with one real game and a bot.
 - The other player's character can lag behind them by up to a meter or two for a moment when they turn sharply or
   climb over things while running (animated characters walk the real floor). `PuppetMode=kinematic` in
@@ -176,8 +199,12 @@ and NPC attack animations on guests (they move and get knocked out, but do not p
 - **Firewall prompt for BatCoopLink**: needed only for direct (IP) play as host.
 - **Shown as "Player"**: Steam was not running when the link started; set `Name=` in `BatCoop.ini`.
 - **T does not open the chat**: the chat only opens in a co-op game; check `ChatKey=` in `BatCoop.ini`.
-- **The game crashes a few seconds into Catwoman's level (new game)**: that was BatCoop 0.3.0/0.3.1; update everyone
-  to 0.3.2.
+- **The game crashes a few seconds into Catwoman's level (new game)**: that was BatCoop 0.3.0/0.3.1; update everyone.
+- **Enemies stay standing on a guest's screen after the host knocked them out**: that was 0.3.x; update everyone.
+- **"Rendering thread exception" naming `Binaries\Win32\d3d9.dll`**: that is dgVoodoo2's `D3D9.dll` crashing. In
+  testing it happened only with two game copies open on one PC, or right after the mod was hot-reloaded while the
+  game ran; not in a normal game. If it happens to you, update dgVoodoo2, or move `Binaries\Win32\D3D9.dll` out to
+  compare without it, and send the logs.
 - **The game starts in a tiny window / at the lowest resolution**: when the game quits while it runs in a window,
   it saves the window's size as your resolution (`Documents\WB Games\Batman Arkham City GOTY\BmGame\Config\BmEngine.ini`,
   `[SystemSettings]` `ResX`/`ResY`/`Fullscreen`), so a shrunk window comes back at every start. Since 0.3.1 BatCoop
@@ -189,7 +216,7 @@ See `lab/README.md`. In short:
 
 ```
 python -I lab/build.py all          # compile check against BmSDK, link helper, offline lab
-python -I lab/run_offline.py        # offline lab: real link processes + bots + animcheck (42 checks + twins)
+python -I lab/run_offline.py        # offline lab: real link processes + bots + animcheck (43 checks + twins)
 python -I lab/ingame.py             # in-game lab: launches the game, a bot joins, judged from logs and probes
 python -I lab/ingame_sync.py        # in-game story/NPC/pause/vote lab against one real game copy
 python -I lab/deploy.py install     # package to dist/BatCoop and install into the game

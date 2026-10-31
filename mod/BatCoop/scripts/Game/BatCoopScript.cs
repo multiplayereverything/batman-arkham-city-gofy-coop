@@ -19,6 +19,7 @@ public sealed class BatCoopScript : Script
     CoopSession? _session;
     readonly LocalWorld _world = new();
     PuppetManager? _puppets;
+    Tracker? _tracker;
     LabBridge? _bridge;
     ProbeWriter? _probe;
     double _nextProbe;
@@ -99,8 +100,12 @@ public sealed class BatCoopScript : Script
         _binder = new NpcGuestBinder(Log);
         if (_cfg.Bool("WorldSync", true)) _session.WorldPort = _worldPort;
         if (_cfg.Bool("NpcSync", true)) _session.NpcPort = _npcHost;
+        _session.NpcHost.SendPoses = _cfg.Bool("NpcAnimations", true);
+        _binder.Animated = _cfg.Bool("NpcAnimations", true);
         _session.Vote.SkipNow += DoSkip;
         _puppets = new PuppetManager(Log);
+        _tracker = new Tracker();
+        _tracker.Mode = _cfg.Str("Markers", "all").ToLowerInvariant() switch { "screen" => TrackMode.ScreenOnly, "off" => TrackMode.Off, _ => TrackMode.All };
         if (_cfg.Str("PuppetMode", "animated").Equals("kinematic", StringComparison.OrdinalIgnoreCase)) _puppets.Mode = PuppetMode.Kinematic;
         if (_cfg.Str("Puppet", "player").Equals("none", StringComparison.OrdinalIgnoreCase)) _puppets.Kind = PuppetKind.None;
 
@@ -206,6 +211,67 @@ public sealed class BatCoopScript : Script
 
     public bool BlockPause => _session is { InRoom: true };
 
+    // ---------- pause menu in a co-op game ----------
+    // The world keeps running behind the pause menu, so the player's own character must not: while the menu is
+    // open, movement and camera are ignored and gameplay keys are swallowed after the menu has seen them.
+
+    bool _menuAsked;        // the game asked to pause (a menu opened) and has not unpaused since
+    bool _inputHeld;        // we told the controller to ignore move and look input
+    double _menuSince;
+    public bool InMenu => _session is { InRoom: true } && _menuAsked && InGameWorld;
+
+    internal void NoteMenu(bool open)
+    {
+        if (open && !_menuAsked) _menuSince = _world.Now;
+        _menuAsked = open;
+    }
+
+    /// <summary>Keys a menu needs to close or be navigated, and our own keys; everything else is gameplay.</summary>
+    static readonly HashSet<string> MenuKeys = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Escape", "Enter", "Tab", "BackSpace", "Up", "Down", "Left", "Right", "Pause",
+        "F1", "F2", "F3", "F4", "F5", "F6", "F7", "F8", "F9", "F10", "F11", "F12",
+        "XboxTypeS_Start", "XboxTypeS_Back", "XboxTypeS_A", "XboxTypeS_B",
+        "XboxTypeS_DPad_Up", "XboxTypeS_DPad_Down", "XboxTypeS_DPad_Left", "XboxTypeS_DPad_Right",
+    };
+
+    internal bool SwallowWhileInMenu(string key, GameObject.EInputEvent ev)
+    {
+        // A release always goes through: a key held when the menu opened must not stay held after it closes.
+        if (!InMenu || ev == GameObject.EInputEvent.IE_Released) return false;
+        return !MenuKeys.Contains(key);
+    }
+
+    void MenuInputTick(Pawn? pawn)
+    {
+        bool want = InMenu && pawn != null;
+        if (!want && !_inputHeld) return;
+        try
+        {
+            var pc = BmSDK.Framework.Game.GetPlayerController();
+            if (want)
+            {
+                // The game saves and restores its own ignore counters around its menus, which wiped a one-time
+                // IgnoreMoveInput(true): hold them every frame instead.
+                if (pc.bIgnoreMoveInput == 0) { pc.bIgnoreMoveInput = 1; _heldMove = true; }
+                if (pc.bIgnoreLookInput == 0) { pc.bIgnoreLookInput = 1; _heldLook = true; }
+                pawn!.Acceleration = Vector3.Zero;
+                if (!_inputHeld) { pc.ResetPlayerMovementInput(); Log("menu open in a co-op game: your character ignores input until it closes"); }
+            }
+            else
+            {
+                // Give back only what we took; a cutscene's own ignore stays.
+                if (_heldMove && pc.bIgnoreMoveInput > 0) pc.bIgnoreMoveInput--;
+                if (_heldLook && pc.bIgnoreLookInput > 0) pc.bIgnoreLookInput--;
+                _heldMove = _heldLook = false;
+                Log("menu closed: input back");
+            }
+        }
+        catch (Exception e) { Log("menu input: " + e.Message); }
+        _inputHeld = want;
+    }
+    bool _heldMove, _heldLook;
+
     /// <summary>A skip press is a vote only in a co-op room and only while we watch a story cutscene. Everywhere
     /// else (menus, loading movies, gameplay: left click is also bound to SkipCutscene) it goes to the game as it
     /// is; 0.3.1 turned every click in a room into a vote, and a vote passed on the main menu made the game show
@@ -273,6 +339,8 @@ public sealed class BatCoopScript : Script
             _pvp?.Forget();
             if (_session != null) _binder?.ForgetAll(_session.NpcGuest);
             if (_session is { InRoom: true, IsHost: false }) _session.World.Resync();
+            _inputHeld = _heldMove = _heldLook = false;   // the new world has a new controller
+            _menuAsked = false;
             _traveling = false;
         }
         if (_traveling && _world.Now - _travelStarted > 60) { _traveling = false; Log("travel did not change the world in 60 s; carrying on"); }
@@ -286,6 +354,7 @@ public sealed class BatCoopScript : Script
         if (!s.InRoom)
         {
             if (_wasInRoom) { _binder?.ReleaseAll(s.NpcGuest); _ui?.CloseAll(); Log("left the room: NPCs handed back to local AI"); }
+            MenuInputTick(LocalWorld.TryGetPawn());
             _wasInRoom = false;
             _settingsSent = false;
             return;
@@ -307,6 +376,7 @@ public sealed class BatCoopScript : Script
         catch { }
 
         var pawn = LocalWorld.TryGetPawn();
+        MenuInputTick(pawn);
         // Cutscene vote: tell the host whether we are watching a cutscene.
         bool inCutscene = InGameWorld && pawn != null && IsInCutscene();
         if (!inCutscene) _unskippable = false;
@@ -345,7 +415,7 @@ public sealed class BatCoopScript : Script
                 _travelStarted = now;
                 _puppets?.Forget();
                 _pvp?.Forget();
-                _binder?.ForgetAll(s.NpcGuest);
+                    _binder?.ForgetAll(s.NpcGuest);
                 try { BmSDK.Framework.Game.GetPlayerController().ConsoleCommand(cmd, false); }
                 catch (Exception e) { Log("follow failed: " + e.Message); }
                 return;
@@ -381,6 +451,8 @@ public sealed class BatCoopScript : Script
     }
 
     internal void HookLog(string s) => Log("hook " + s);
+
+    static object? Try<T>(Func<T> f) { try { return f(); } catch (Exception e) { return e.GetType().Name; } }
 
     void Log(string s)
     {
@@ -538,6 +610,12 @@ public sealed class BatCoopScript : Script
                 else TeleportToFriend();
                 break;
             case Keys.F9: _hudVisible = !_hudVisible; break;
+            case Keys.F4:
+                if (_tracker == null) break;
+                _tracker.Mode = _tracker.Mode switch { TrackMode.All => TrackMode.ScreenOnly, TrackMode.ScreenOnly => TrackMode.Off, _ => TrackMode.All };
+                SaveIni("Markers", _tracker.Mode switch { TrackMode.ScreenOnly => "screen", TrackMode.Off => "off", _ => "all" });
+                Toast(_tracker.Mode switch { TrackMode.All => "Player markers: on screen and radar", TrackMode.ScreenOnly => "Player markers: on screen only", _ => "Player markers: off" });
+                break;
             case Keys.F10:
                 if (_session.IsHost && _session.Lobby.Length > 0)
                 {
@@ -579,6 +657,7 @@ public sealed class BatCoopScript : Script
             PumpLinkStart();
             if (!WorldStillOurs()) { ServeBridge(); return; }
             _world.Refresh();
+            _world.InMenu = InMenu;
             _session.LocalWorld = _world.WorldName;
             LabTick();
             _labCombat.Tick(_world.Now);
@@ -699,7 +778,7 @@ public sealed class BatCoopScript : Script
         var head = _session.InRoom ? (_session.IsHost ? "HOST" : $"PLAYER {_session.LocalId + 1}") : _session.State.ToString().ToUpperInvariant();
         Text($"BatCoop {Versions.Mod}  [{head}]  {_session.StatusText}", 255, 220, 90);
         if (!_session.InRoom) Text("F5 Host   F6 Join   F7 Leave   F8 Go to friend   F10 Invite   F9 Hide", 200, 200, 200);
-        else Text($"{_ui?.ChatKey} Chat   {_ui?.MenuKey} {(_session.IsHost ? "Host menu" : "Game settings")}{(PvpBridge.Available && _session.Settings.Pvp ? "   PVP ON" : "")}", 200, 200, 200);
+        else Text($"{_ui?.ChatKey} Chat   {_ui?.MenuKey} {(_session.IsHost ? "Host menu" : "Game settings")}   F4 Markers{(PvpBridge.Available && _session.Settings.Pvp ? "   PVP ON" : "")}", 200, 200, 200);
 
         var pawn = LocalWorld.TryGetPawn();
         foreach (var rp in _session.Remotes.Values)
@@ -711,6 +790,7 @@ public sealed class BatCoopScript : Script
             if (rp.Info != null && rp.Info.World.Length > 0 && _world.WorldName.Length > 0 && !rp.Info.World.Equals(_world.WorldName, StringComparison.OrdinalIgnoreCase))
                 where = $"in {rp.Info.World}";
             var ping = rp.RttMs >= 0 ? $"{rp.RttMs:0} ms" : "";
+            if (rp.Buffer.HasData && (rp.Buffer.Newest.Flags & PlayerFlags.InMenu) != 0) where += "  (in menu)";
             Text($"  {rp.Name}  {rp.Info?.Character}  {where}  {ping}", 150, 210, 255);
         }
 
@@ -723,6 +803,7 @@ public sealed class BatCoopScript : Script
                 Text($"  Cutscene: {_session.Vote.Votes}/{_session.Vote.Needed} voted to skip{(_session.Vote.LocalVoted ? "" : " - press skip to vote")}", 255, 220, 90);
         }
         if (!_session.InRoom || _session.Settings.NameTags) DrawNameTags(hud, c);
+        if (_session.InRoom && pawn != null && InGameWorld) _tracker?.Draw(hud, c, _session, _puppets, _world.WorldName, pawn.Location);
         if (_session.InRoom) _ui?.Draw(c, _session);
 
         double now = _world.Now;
@@ -791,6 +872,22 @@ public sealed class BatCoopScript : Script
             case "host": Host(T(1)); return Ok();
             case "join": Join(T(1), parts.Length > 2 ? parts[2] : ""); return Ok();
             case "leave": s.Leave(); _puppets!.DestroyAll(); return Ok();
+            case "markers":
+                if (parts.Length > 1) _tracker!.Mode = parts[1] switch { "screen" => TrackMode.ScreenOnly, "off" => TrackMode.Off, _ => TrackMode.All };
+                return Ok(("mode", _tracker!.Mode.ToString()),
+                          ("drawn", new LabBridge.RawJson(LabBridge.Json(_tracker.LastDrawn.Select(kv => (kv.Key.ToString(), (object?)kv.Value)).ToArray()))));
+            case "menu":
+                // Lab: the pause-menu state as BatCoop sees it, and whether the controller ignores input.
+                var mpc = BmSDK.Framework.Game.GetPlayerController();
+                return Ok(("in_menu", InMenu), ("asked", _menuAsked), ("held", _inputHeld), ("move_ignored", mpc.IsMoveInputIgnored()),
+                          ("look_ignored", mpc.IsLookInputIgnored()), ("swallowed", InputHooks.MenuSwallowed),
+                          ("would_swallow_w", SwallowWhileInMenu("W", GameObject.EInputEvent.IE_Pressed)),
+                          ("would_swallow_lmb", SwallowWhileInMenu("LeftMouseButton", GameObject.EInputEvent.IE_Pressed)),
+                          ("would_swallow_esc", SwallowWhileInMenu("Escape", GameObject.EInputEvent.IE_Pressed)),
+                          ("would_swallow_release", SwallowWhileInMenu("W", GameObject.EInputEvent.IE_Released)));
+            case "openmap":
+                BmSDK.Framework.Game.GetPlayerController().OpenLevelUpOrMap();
+                return Ok();
             case "chat": s.SendChat(line[5..]); return Ok();
             case "exec":
                 var res = BmSDK.Framework.Game.GetPlayerController().ConsoleCommand(line[5..], false);
@@ -873,10 +970,17 @@ public sealed class BatCoopScript : Script
                 var mirrors = _session!.NpcGuest.Mirrors.Values.Take(8).Select(m => new LabBridge.RawJson(LabBridge.Json(
                     ("id", (int)m.Info.Id), ("key", m.Info.Key), ("bound", m.Local is RBMPawnAI), ("spawned", m.Spawned),
                     ("local_pos", m.Local is RBMPawnAI lp && lp.IsValid ? lp.Location : (object?)null), ("host_pos", m.Latest.Pos),
-                    ("local_health", m.Local is RBMPawnAI lh && lh.IsValid ? lh.Health : -1), ("host_health", (int)m.Latest.Health)))).ToList();
+                    ("local_health", m.Local is RBMPawnAI lh && lh.IsValid ? lh.Health : -1), ("host_health", (int)m.Latest.Health),
+                    ("host_down", (m.Latest.Flags & NpcFlags.Down) != 0), ("local_down", m.Local is RBMPawnAI ld && ld.IsValid && NpcHostPort.IsDown(ld)),
+                    ("poses", m.Poses.Received), ("replayed", _binder?.DriveOf(m.Info.Id)?.Replayed ?? 0),
+                    ("replay_error", _binder?.DriveOf(m.Info.Id)?.LastError ?? ""), ("down_how", _binder?.DriveOf(m.Info.Id)?.DownHow ?? "")))).ToList();
                 return Ok(("live", list.Count), ("shared", _session!.NpcHost.SharedCount), ("mirrors", _session.NpcGuest.Mirrors.Count), ("mirror_list", mirrors),
                           ("bound", _binder?.Bound ?? 0), ("suppressed", _binder?.Suppressed ?? 0), ("spawn_failures", _binder?.SpawnFailures ?? 0),
-                          ("hits_sent", _session.NpcGuest.HitsSent), ("hits_applied", _session.NpcHost.HitsApplied), ("nearest", nearest));
+                          ("hits_sent", _session.NpcGuest.HitsSent), ("hits_applied", _session.NpcHost.HitsApplied), ("nearest", nearest),
+                          ("poses_sent", _session.NpcHost.PosesSent), ("poses_replayed", _binder?.PosesReplayed ?? 0), ("knockouts", _binder?.Knockouts ?? 0));
+            case "npcdown":
+                NpcGuestBinder.DownMode = parts.Length > 1 ? parts[1] : "strike";
+                return Ok(("mode", NpcGuestBinder.DownMode));
             case "npcdump":
                 // Lab: the nearest live AI pawns with everything a bot host needs to replay them.
                 var at = LocalWorld.TryGetPawn()?.Location ?? Vector3.Zero;
@@ -886,6 +990,27 @@ public sealed class BatCoopScript : Script
                     .Select(n => new LabBridge.RawJson(LabBridge.Json(("key", n.GetPathName(null)), ("class", n.Class.GetPathName(null)),
                         ("char", n.CharactersType?.GetPathName(null) ?? ""), ("pos", n.Location), ("health", n.Health)))).ToList();
                 return Ok(("npcs", dump));
+            case "npcprobe":
+                // Lab: how the game marks the nearest NPCs (knocked out, ragdoll, pose) on this machine.
+                var pAt = LocalWorld.TryGetPawn()?.Location ?? Vector3.Zero;
+                var probe = BmSDK.Framework.Game.FindObjects<RBMPawnAI>().Where(n => n.IsValid && !n.Name.ToString()!.StartsWith("Default__"))
+                    .OrderBy(n => Vector3.Distance(n.Location, pAt)).Take(parts.Length > 1 ? int.Parse(parts[1]) : 6)
+                    .Select(n => new LabBridge.RawJson(LabBridge.Json(("key", n.GetPathName(null)!.Split('.').Last()), ("health", n.Health),
+                        ("live", NpcHostPort.IsLive(n)), ("down", NpcHostPort.IsDown(n)), ("good_as_dead", n is RPawnVillain gv && gv.bGoodAsDead),
+                        ("died", n is RPawnVillain dv && dv.bDiedAlready), ("really_dead", n.bReallyDead), ("ragdoll", Try(() => n.IsRagdoll())),
+                        ("physics", n.Physics.ToString()), ("hidden", n.bHidden), ("tid", AnimBridge.TransitionId(n)),
+                        ("playing", AnimBridge.Playing(n).clip.Split('.').Last()), ("pose", Try(() => AnimBridge.Read(n).ToString())), ("pos", n.Location),
+                        ("dist", Vector3.Distance(n.Location, pAt)), ("mirror", _binder?.MirrorOf(n)?.Info.Id ?? 0)))).ToList();
+                return Ok(("npcs", probe));
+            case "ko":
+                // Lab: knock out the nearest standing NPC the way a strike does (on the host: the real result).
+                var koAt = LocalWorld.TryGetPawn()?.Location ?? Vector3.Zero;
+                var victim = BmSDK.Framework.Game.FindObjects<RBMPawnAI>().Where(n => NpcHostPort.IsLive(n) && !NpcHostPort.IsDown(n))
+                    .OrderBy(n => Vector3.Distance(n.Location, koAt)).FirstOrDefault() ?? throw new InvalidOperationException("no standing NPC");
+                var strike = BmSDK.Framework.Game.FindObject<Class>(parts.Length > 1 ? parts[1] : "BmGame.RDmgType_Strike");
+                var dir = Vector3.Normalize((victim.Location - koAt) with { Z = 0 } + new Vector3(0.001f, 0, 0));
+                victim.TakeDamage(victim.Health + 5, BmSDK.Framework.Game.GetPlayerController(), victim.Location, dir * 20000, strike, default, null);
+                return Ok(("key", victim.GetPathName(null)), ("health", victim.Health), ("down", NpcHostPort.IsDown(victim)), ("dmg", strike?.Name.ToString()));
             case "spawnthug":
                 // Lab: put a thug next to the local player, the way BmSDK's DemoScript spawns the Joker.
                 var me = LocalWorld.TryGetPawn() ?? throw new InvalidOperationException("no pawn");

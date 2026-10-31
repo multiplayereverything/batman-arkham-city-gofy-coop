@@ -94,7 +94,8 @@ public sealed class CoopConfig
         # from the game's launcher (or the desktop's) in Documents\WB Games\...\BmEngine.ini.
         DisplayGuard=1
 
-        # Chat and host menu keys (Unreal key names: T, Y, F3, F4, ...). Both can also be changed in the host menu.
+        # Chat and host menu keys (Unreal key names: T, Y, F3, ...; F4 is taken by the player markers). Both can also be
+        # changed in the host menu.
         # In a co-op game the chat key is taken by the chat; T is also the game's "secondary group combat move".
         ChatKey=T
         MenuKey=F3
@@ -111,5 +112,13 @@ public sealed class CoopConfig
 
         # animated = other players walk, run and fight with the game's own animations; kinematic = 0.2 behaviour
         PuppetMode=animated
+
+        # Where the other players are: all = a marker on screen (through walls, on the screen edge when they are out of
+        # view) and a radar on the right; screen = on-screen markers only; off. F4 switches and saves it here.
+        Markers=all
+
+        # 1 = guests see the host's NPCs move and fight with their animations (strikes, hit reactions, knock-downs);
+        # 0 = positions and knock-outs only, like 0.3.
+        NpcAnimations=1
         """;
 }

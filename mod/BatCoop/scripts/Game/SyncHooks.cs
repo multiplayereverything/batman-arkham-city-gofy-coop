@@ -112,6 +112,9 @@ static class SyncHooks
     static bool SetPause(PlayerController self, bool pause, IntPtr canUnpause)
     {
         Count("SetPause", pause.ToString());
+        // The game pauses when its pause menu (or the map, upgrades...) opens and unpauses when it closes: in a co-op
+        // game the pause is refused, but the request says the player is in a menu.
+        S?.NoteMenu(pause);
         if (pause && S?.BlockPause == true) { S.PausesBlocked++; return false; }
         return self.SetPause(pause, canUnpause);
     }

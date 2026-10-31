@@ -8,7 +8,7 @@ namespace BatCoop.Game;
 
 static class InputHooks
 {
-    public static long Keys, Chars, Swallowed;
+    public static long Keys, Chars, Swallowed, MenuSwallowed;
 
     [Redirect(typeof(_Console), nameof(_Console.InputKey))]
     static bool InputKey(_Console self, int ControllerId, FName Key, GameObject.EInputEvent Event, float AmountDepressed, bool bGamepad)
@@ -25,6 +25,9 @@ static class InputHooks
             catch { }
         }
         else if (ui is { Capturing: true }) return true; // mouse and stick axes too, while typing
+        // In a co-op game the world keeps running behind the pause menu: the menu has had the key already (Scaleform
+        // sees input first), so what reaches here would only move or fight in the background.
+        if (BatCoopScript.Instance?.SwallowWhileInMenu(Key.ToString() ?? "", Event) == true) { MenuSwallowed++; return true; }
         return self.InputKey(ControllerId, Key, Event, AmountDepressed, bGamepad);
     }
 

@@ -30,6 +30,7 @@ public enum PlayerFlags : byte
     Dead = 4,
     Hidden = 8,    // pawn hidden by the game (cutscene, vehicle, ...)
     Gliding = 16,
+    InMenu = 32,   // the pause menu (or map, upgrades...) is open: the character ignores input meanwhile
 }
 
 /// <summary>Characters a player can be. The value travels on the wire.</summary>

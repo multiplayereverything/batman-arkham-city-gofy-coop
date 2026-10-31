@@ -57,7 +57,7 @@ public sealed class PoseQueue
     readonly Queue<(double at, PoseCall call)> _q = new();
     uint _lastSeq;
     public long Received, Played;
-    public PoseCall? Last;
+    public PoseCall? Last, Newest;
 
     public void Add(uint seq, PoseCall call, double now)
     {
@@ -65,6 +65,7 @@ public sealed class PoseQueue
         if (seq != 0 && seq <= _lastSeq) return;
         _lastSeq = seq;
         Received++;
+        Newest = call;
         _q.Enqueue((now, call));
         while (_q.Count > 32) _q.Dequeue();
     }
