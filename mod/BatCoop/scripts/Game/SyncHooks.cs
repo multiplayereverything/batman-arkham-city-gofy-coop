@@ -84,6 +84,15 @@ static class SyncHooks
         self.TakeDamage(damage, instigatedBy, hitLocation, momentum, damageType, hitInfo, damageCauser);
     }
 
+    [Redirect(typeof(RPawnPlayer), nameof(RPawnPlayer.TakeDamage))]
+    static void TakeDamagePlayer(RPawnPlayer self, int damage, Controller instigatedBy, Vector3 hitLocation, Vector3 momentum,
+                                 Class damageType, Actor.FTraceHitInfo hitInfo, Actor damageCauser)
+    {
+        Count("TakeDamagePlayer", $"{self.Class.Name} {damage}");
+        if (S?.FilterPlayerDamage(self, instigatedBy, damageCauser) == false) return;
+        self.TakeDamage(damage, instigatedBy, hitLocation, momentum, damageType, hitInfo, damageCauser);
+    }
+
     [Redirect(typeof(RPawnVillain), nameof(RPawnVillain.TakeDamage))]
     static void TakeDamageVillain(RPawnVillain self, int damage, Controller instigatedBy, Vector3 hitLocation, Vector3 momentum,
                                   Class damageType, Actor.FTraceHitInfo hitInfo, Actor damageCauser)

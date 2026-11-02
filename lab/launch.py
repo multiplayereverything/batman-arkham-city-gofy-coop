@@ -59,7 +59,8 @@ def start(roles):
         res = "-ResX=960 -ResY=540".split()
         # LAB_URL: start straight into that map URL (works without the mod, e.g. to compare with BatCoop off).
         url = [os.environ["LAB_URL"]] if os.environ.get("LAB_URL") else []
-        if url:
+        # LAB_MENU=1: stay in the main menu (a guest joining a host from there).
+        if url or os.environ.get("LAB_MENU") == "1":
             env["BATCOOP_LABENTERWORLD"] = "0"
         subprocess.Popen([EXE, *url, "-windowed", *res, "-nostartupmovies"], cwd=os.path.dirname(EXE), env=env)
         end = time.time() + 60

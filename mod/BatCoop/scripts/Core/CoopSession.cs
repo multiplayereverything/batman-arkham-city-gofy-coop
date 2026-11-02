@@ -72,6 +72,13 @@ public sealed class CoopSession : IDisposable
     public bool IsHost => State == LinkState.Hosting;
     public WorldInfo? HostWorld { get; private set; }
     public string LocalWorld { get; set; } = "";
+    /// <summary>Host: what WorldInfo tells guests besides the map (set by the game layer every frame).</summary>
+    public string LocalUrl { get; set; } = "";
+    public bool LocalInGame { get; set; }
+    public float LocalSeconds { get; set; }
+    public string LocalStage { get; set; } = "";
+    public string LocalCine { get; set; } = "";
+    (string, string, bool, string, string) _sentWorld;
     public IReadOnlyDictionary<byte, RemotePlayer> Remotes => _remotes;
     public List<string> Notices { get; } = [];
     public long StatesSent { get; private set; }
@@ -179,10 +186,13 @@ public sealed class CoopSession : IDisposable
             SendGame(PeerIds.Everyone, true, info.Encode());
         }
 
-        if (IsHost && now >= _nextWorld)
+        // At once when the host's world changes (a guest in the main menu follows it from this), else every 5 s.
+        var where = (LocalWorld, LocalUrl, LocalInGame, LocalStage, LocalCine);
+        if (IsHost && (now >= _nextWorld || where != _sentWorld))
         {
             _nextWorld = now + 5;
-            SendGame(PeerIds.Everyone, true, new WorldInfo(LocalWorld, info.Name).Encode());
+            _sentWorld = where;
+            SendGame(PeerIds.Everyone, true, new WorldInfo(LocalWorld, info.Name, LocalUrl, LocalInGame, LocalSeconds, LocalStage, LocalCine).Encode());
         }
 
         if (WorldPort != null)

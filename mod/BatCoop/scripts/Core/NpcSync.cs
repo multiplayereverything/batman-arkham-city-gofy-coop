@@ -45,7 +45,7 @@ public interface INpcHostPort
 
 public readonly record struct NpcHit(uint NpcId, int Damage, Vector3 HitLocation, Vector3 Momentum, string DamageType, byte Attacker);
 
-public enum NpcMsg : byte { Info = 1, Gone = 2, States = 3, Hit = 4, Epoch = 5, Pose = 6 }
+public enum NpcMsg : byte { Info = 1, Gone = 2, States = 3, Hit = 4, Epoch = 5, Pose = 6, Attack = 7 }
 
 /// <summary>Host side: decides which NPCs are shared, numbers them, streams them.</summary>
 public sealed class NpcHost
@@ -156,6 +156,17 @@ public sealed class NpcHost
         }
     }
 
+    /// <summary>The shared id of the NPC behind this handle (0 = not shared).</summary>
+    public uint IdOf(long handle) => _ids.TryGetValue(handle, out var id) && _shared.ContainsKey(id) ? id : 0;
+    public long AttacksSent { get; private set; }
+
+    /// <summary>A host NPC started an attack on this guest's puppet: the guest's copy attacks the guest for real.</summary>
+    public void SendAttack(byte to, uint id)
+    {
+        AttacksSent++;
+        _send(to, true, new WireWriter().U8(Channel).U8((byte)NpcMsg.Attack).U32(Epoch).U32(id).ToArray());
+    }
+
     public void Receive(byte from, ref WireReader r, INpcHostPort port)
     {
         if ((NpcMsg)r.U8() != NpcMsg.Hit) return;
@@ -217,11 +228,15 @@ public sealed class NpcGuest
     public IReadOnlyDictionary<uint, NpcMirror> Mirrors => _mirrors;
     public uint Epoch => _epoch;
     public long HitsSent { get; private set; }
+    /// <summary>Host NPCs that just started an attack on us (their ids): the game layer plays them on us.</summary>
+    public Queue<uint> Attacks { get; } = new();
+    public long AttacksReceived { get; private set; }
     /// <summary>Mirrors removed since the game layer last looked: it must destroy or release their local actors.</summary>
     public List<NpcMirror> Removed { get; } = [];
 
     public void Clear()
     {
+        Attacks.Clear();
         Removed.AddRange(_mirrors.Values);
         _mirrors.Clear();
     }
@@ -254,6 +269,10 @@ public sealed class NpcGuest
                 pr.U8(); // GameMsg.Anim
                 var call = PoseCall.Decode(ref pr, out var seq);
                 if (_mirrors.TryGetValue(pid, out var pm)) pm.Poses.Add(seq, call, now);
+                break;
+            case NpcMsg.Attack:
+                uint aid = r.U32();
+                if (_mirrors.ContainsKey(aid)) { Attacks.Enqueue(aid); AttacksReceived++; }
                 break;
             case NpcMsg.Gone:
                 if (_mirrors.Remove(r.U32(), out var gone)) Removed.Add(gone);

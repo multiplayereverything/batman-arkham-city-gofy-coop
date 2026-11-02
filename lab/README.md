@@ -91,3 +91,15 @@ Bridge commands: `npcprobe [n]` (health, down, ragdoll, pose of the nearest NPCs
 the render thread ("Rendering thread exception", d3d9.dll offset 0x31ca5), and so did a hot reload once; restart the
 copy instead of hot-reloading before long runs. Do not teleport the lab player next to hostile NPCs: Batman gets
 beaten to a game over (`batentry`, no pawn) and the bridge then has nothing to drive.
+
+## 0.4.1 additions
+| Check / tool | What it shows |
+|---|---|
+| `A_thug_targets_guest` | The real host's thug in a fight next to the bot guest goes on the guest (`thugfight`, then retargets and attacks sent). |
+| `B_thug_attack_on_guest` | The bot host sends `npc_attack`; the real guest's copy plays a thug close attack and the guest is hit (health 100 -> 90). |
+| `lab/ingame_041.py` (`M_*`) | Real game in the main menu as a guest: waits while the host is in the menu, refuses its own game (`menugate`), follows the bot host into CW without the movie, shows the puppet, sees the host's cutscene start and end without forcing one, gets its window back after a shrink to 160x120. |
+| offline `world_info_follow`, `npc_attack_relay` | WorldInfo survives the wire and the follow URL loses its movie; an attack reaches the guest and one from a stale epoch is dropped. |
+
+Bridge commands: `thugs` (counters, `near`), `thugspot`, `thugfight`, `interps [all]`, `menugate <MMI_name>`.
+Bot commands: `npc_attack KEY`, `hostworld WORLD INGAME SECONDS [URL]`, `cine PATH|n` / `cine -`, `stand X Y Z`.
+Launcher: `LAB_MENU=1` keeps the copy in the main menu (no lab world).

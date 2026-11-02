@@ -36,7 +36,9 @@ public static class BotServe
             }
         }
 
-        var path = FakeWorld.Circle(at, 200, 150);
+        var circle = FakeWorld.Circle(at, 200, 150);
+        Vector3? standAt = null; // "stand X Y Z": stop circling and stand there
+        Func<double, (Vector3, float, Vector3)> path = t => standAt is { } sp ? (sp, 0f, Vector3.Zero) : circle(t);
         using var bot = new Bot(name, linkPort, new FakeWorld(name, path) { LocalInfo = new(name, CharacterId.Batman, "RPawnPlayerBm", "OW") }, linkExe, ".");
         var story = new FakeStory { Session = bot.Session };
         var npcs = new FakeNpcs();
@@ -113,6 +115,15 @@ public static class BotServe
                             bot.Session.NpcGuest.SendHit(new NpcHit(m.Info.Id, int.Parse(p[2]), m.Latest.Pos, Vector3.Zero, "", 0));
                             ans = J(new { ok = true, npc = m.Info.Key });
                             break;
+                        case "npc_attack":
+                            // npc_attack KEYPART: the bot host's NPC starts an attack on the guest (what a real host
+                            // sends when one of its thugs swings at that guest's puppet).
+                            var att = npcs.All.FirstOrDefault(x => x.Key.Contains(p[1], StringComparison.OrdinalIgnoreCase));
+                            uint attId = att == null ? 0 : bot.Session.NpcHost.IdOf(att.Handle);
+                            if (attId == 0) { ans = J(new { ok = false, error = "no shared npc like " + p[1] }); break; }
+                            foreach (var rid in bot.Session.Remotes.Keys) bot.Session.NpcHost.SendAttack(rid, attId);
+                            ans = J(new { ok = true, npc = att!.Key, id = attId });
+                            break;
                         case "npc_ko":
                             // npc_ko KEYPART [CLIP]: the bot host's NPC is knocked out, playing CLIP (a real knock-down clip from run A).
                             var ko = npcs.All.FirstOrDefault(x => x.Key.Contains(p[1], StringComparison.OrdinalIgnoreCase));
@@ -147,6 +158,20 @@ public static class BotServe
                                 vote = new { votes = bot.Session.Vote.Votes, needed = bot.Session.Vote.Needed, skips },
                             });
                             break;
+                        case "hostworld":
+                            // hostworld WORLD INGAME SECONDS [URL]: what this bot host tells guests about its game.
+                            bot.Session.LocalWorld = p[1];
+                            bot.Session.LocalInGame = p[2] == "1";
+                            bot.Session.LocalSeconds = float.Parse(p[3], System.Globalization.CultureInfo.InvariantCulture);
+                            bot.Session.LocalUrl = p.Length > 4 ? p[4] : "";
+                            bot.World.LocalInfo = bot.World.LocalInfo with { World = p[1] };
+                            ans = J(new { ok = true });
+                            break;
+                        case "stand":
+                            standAt = new Vector3(float.Parse(p[1], CultureInfo.InvariantCulture), float.Parse(p[2], CultureInfo.InvariantCulture), float.Parse(p[3], CultureInfo.InvariantCulture));
+                            ans = J(new { ok = true });
+                            break;
+                        case "cine": bot.Session.LocalCine = p.Length > 1 && p[1] != "-" ? p[1] : ""; ans = J(new { ok = true }); break;
                         case "quit": quit = true; ans = J(new { ok = true }); break;
                         default: ans = J(new { ok = false, error = "unknown " + p[0] }); break;
                     }

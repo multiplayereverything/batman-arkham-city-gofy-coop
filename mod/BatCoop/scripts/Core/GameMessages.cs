@@ -92,10 +92,15 @@ public sealed record PlayerInfo(string Name, CharacterId Character, string PawnC
     public static PlayerInfo Decode(ref WireReader r) => new(r.Str(), (CharacterId)r.U8(), r.Str(), r.Str());
 }
 
-public sealed record WorldInfo(string World, string HostName)
+/// <summary>Where the host is. Url is the host's start URL (guests follow it, even from the main menu); InGame is
+/// true once the host has a pawn in that world, for Seconds; Stage names the host's last in-map change (a
+/// CommitMapChange: "levels|entrance|count"), so guests make the same one instead of their own.</summary>
+/// <param name="Cine">The story cutscene (Matinee) the host is playing: "path|n", n counts starts; "" = none.</param>
+public sealed record WorldInfo(string World, string HostName, string Url = "", bool InGame = false, float Seconds = 0, string Stage = "", string Cine = "")
 {
-    public byte[] Encode() => new WireWriter().U8((byte)GameMsg.WorldInfo).Str(World).Str(HostName).ToArray();
-    public static WorldInfo Decode(ref WireReader r) => new(r.Str(), r.Str());
+    public byte[] Encode() => new WireWriter().U8((byte)GameMsg.WorldInfo).Str(World).Str(HostName)
+        .Str(Url).Bool(InGame).F32(Seconds).Str(Stage).Str(Cine).ToArray();
+    public static WorldInfo Decode(ref WireReader r) => new(r.Str(), r.Str(), r.Str(), r.Bool(), r.F32(), r.Str(), r.Str());
 }
 
 public static class GameMessages
@@ -105,4 +110,15 @@ public static class GameMessages
     // Ping time is f32 seconds since the session clock started; enough for round trips.
     public static byte[] Ping(double t) => new WireWriter().U8((byte)GameMsg.Ping).F32((float)t).ToArray();
     public static byte[] Pong(float t) => new WireWriter().U8((byte)GameMsg.Pong).F32(t).ToArray();
+}
+
+public static class StartUrl
+{
+    /// <summary>The start URL without its opening movie (Movie=..., StreamMovie).</summary>
+    public static string StripMovie(string url)
+    {
+        var parts = url.Split('?');
+        return string.Join("?", parts.Where((p, i) => i == 0 ||
+            !(p.StartsWith("Movie=", StringComparison.OrdinalIgnoreCase) || p.Equals("StreamMovie", StringComparison.OrdinalIgnoreCase))));
+    }
 }

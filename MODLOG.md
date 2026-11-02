@@ -315,8 +315,32 @@ group for the guest.
   rule now: one real copy at a time, restart instead of hot reload for long runs.
 - Rule learned: teleporting the lab player next to Outcasts gets Batman beaten to a game over; stand 10+ m away.
 
+## 0.4.1: the host's game, thugs on every player, cutscenes, the tiny window (2026-11-02)
+- Host's game: guests in the main menu follow `WorldInfo` (world, in-game, seconds since playing, start URL) with
+  `start <url>` (movie stripped once the host is 15+ s in), on `StorySlot_Temp`. `StoryHooks` redirects
+  `RGFxMovieUI_MainMenu.OnClicked` (New Game, Continue, Catwoman episodes, DLC... refused for a guest),
+  `Game_StartGameAt`, `Game_Continue`, `Game_Replay1stCatwoman`, and `RGameRI.PrepareMapChange/CommitMapChange`
+  (a guest's own in-map story change is refused; the host's is replayed). That last one is the post-Catwoman bug:
+  0.4.0 let each game hand over to Bruce Wayne on its own, and a guest ended up as Batman inside the host's CW level.
+  Protocol `batcoop-5`.
+- Thugs on guests (`Game/ThugShare.cs`): a thug given a puppet as its target (`SetTargetPlayer`) drops out of
+  combat, because a puppet has no controller. So the host keeps the AI on the host, sets
+  `RBMBehaviour_CombatAI.bCanAttack=false` on thugs nearer a guest (6 m, hysteresis 0.85/1.15) and sends
+  `NpcMsg.Attack` every 2.5-4.5 s, one thug per guest per 1.2 s. The guest plays a real `RCombatMove_VillainCloseAttack`
+  on its copy (counter icon, counter or hit).
+- Cutscenes: `SeqAct_Interp.ForceActivateInput` called from C# kills the game (uncatchable; .NET Runtime stack in the
+  Application log). Cutscene sync is end-only: when the host's reported cine ends and the guest plays the same path,
+  the guest skips it.
+- Display: `DisplayGuard` puts the window back when it shrinks below 640x360 (leaving fullscreen went to the
+  smallest mode). Lab: 154x91 -> 1600x900.
+- A thug moved with `SetLocation` walks back to its post; tests stand the bot next to it instead (`stand X Y Z`).
+- Tests: offline suite PASS (twins 4/4), `ingame_sync.py` 25/25, `ingame_041.py` 8/8.
+
 ## Handoff (start here in a new session)
-- Repo: `multiplayereverything/batman-arkham-city-gofy-coop`, branch `main`, version 0.4.0, protocol `batcoop-4`.
+- Repo: `multiplayereverything/batman-arkham-city-gofy-coop`, branch `main`, version 0.4.1, protocol `batcoop-5`.
+- 0.4.1 lab: `LAB_MENU=1 python -I lab/launch.py start host` keeps the copy in the main menu; `python -I lab/ingame_041.py`;
+  bridge `thugs`, `thugspot`, `thugfight`, `interps [all]`, `menugate <MMI_name>`; bot `npc_attack`, `hostworld`,
+  `cine`, `stand`. Never call `ForceActivateInput` on a matinee (crash); never give `aithug` a class that is not loaded.
 - Game: `F:\SteamLibrary\steamapps\common\Batman Arkham City GOTY`, BmSDK 0.21, dgVoodoo2 installed.
 - Build/deploy: `python -I lab/build.py all`, `python -I lab/deploy.py install` (hot reload; a reload ends the
   co-op room, so re-host). One test copy: `python -I lab/launch.py start host` / `stop`.

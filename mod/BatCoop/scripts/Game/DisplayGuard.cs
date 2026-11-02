@@ -19,7 +19,30 @@ static class DisplayGuard
     [DllImport("user32.dll")] static extern bool AdjustWindowRectEx(ref Rect r, uint style, bool menu, uint exStyle);
     [DllImport("user32.dll")] static extern int GetWindowLong(IntPtr h, int index);
     [DllImport("user32.dll")] static extern bool SystemParametersInfo(uint action, uint param, ref Rect r, uint winIni);
+    [DllImport("user32.dll")] static extern bool GetClientRect(IntPtr h, out Rect r);
+    [DllImport("user32.dll")] static extern bool IsIconic(IntPtr h);
+    [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
     struct Rect { public int L, T, R, B; }
+
+    static IntPtr _window;
+
+    /// <summary>While the game runs: leaving fullscreen (Alt+Enter, the options menu) could leave the game in a
+    /// window a few pixels wide, and the game then took that as its resolution. A visible, not minimized window
+    /// smaller than 640x360 is resized to the player's resolution from the launcher (else the desktop's).
+    /// Returns the size it resized to, or null.</summary>
+    public static Resolution? Watch(Action<string> log)
+    {
+        if (_window == IntPtr.Zero) _window = Process.GetCurrentProcess().MainWindowHandle;
+        var h = _window;
+        if (h == IntPtr.Zero || !IsWindowVisible(h) || IsIconic(h) || !GetClientRect(h, out var c)) return null;
+        int w = c.R - c.L, ht = c.B - c.T;
+        if (w <= 0 || ht <= 0 || new Resolution(w, ht, false).Usable) return null;
+        var target = DisplaySettings.Repair(new Resolution(w, ht, false), DisplaySettings.ReadFile(DisplaySettings.LauncherIni),
+                                            GetSystemMetrics(0), GetSystemMetrics(1));
+        if (target is not { } t) return null;
+        log($"display: the game window shrank to {w}x{ht}; resizing it to {t.X}x{t.Y}");
+        return ResizeWindow(t with { Fullscreen = false }, log) ? t : null;
+    }
 
     /// <summary>The repaired resolution, or null when nothing needed repairing. <paramref name="inWindow"/>: the
     /// game is running in a window now (only then is the window resized; a fullscreen game is left alone).</summary>

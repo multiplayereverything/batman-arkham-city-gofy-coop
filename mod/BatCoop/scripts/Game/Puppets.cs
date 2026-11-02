@@ -100,8 +100,14 @@ public sealed class PuppetManager
         RPawnPlayer? pawn = null;
         try
         {
-            pawn = SpawnPlayerPawn(ch, s.Pos, rot, out var why) ?? SpawnPlayerPawn(CharacterId.Batman, s.Pos, rot, out why);
+            // A level only loads the classes it uses (Catwoman's level has no Batman): fall back to our own
+            // character's class, which is always loaded, then to Batman.
+            var own = LocalWorld.TryGetPawn() is { } me ? LocalWorld.CharacterOf(me) : CharacterId.Batman;
+            pawn = SpawnPlayerPawn(ch, s.Pos, rot, out var why);
+            if (pawn == null && own != ch) pawn = SpawnPlayerPawn(own, s.Pos, rot, out _);
+            if (pawn == null && own != CharacterId.Batman && ch != CharacterId.Batman) pawn = SpawnPlayerPawn(CharacterId.Batman, s.Pos, rot, out _);
             if (pawn == null) { LastError = $"spawn failed: {why}"; _log(LastError); }
+            else if (why.Length > 0) _log($"puppet: {why}; using {pawn.Class.Name} instead");
         }
         catch (Exception e)
         {
@@ -127,6 +133,8 @@ public sealed class PuppetManager
                 CharacterId.Catwoman => new RPawnPlayerCatwoman(pos, rot),
                 CharacterId.Robin => new RPawnPlayerRobin(pos, rot),
                 CharacterId.Nightwing => new RPawnPlayerNightwing(pos, rot),
+                CharacterId.BruceWayne => new RPawnPlayerBruceWayne(pos, rot),
+                CharacterId.BatmanWithSword => new RPawnPlayerBatmanWithSword(pos, rot),
                 _ => new RPawnPlayerBm(pos, rot),
             };
         }

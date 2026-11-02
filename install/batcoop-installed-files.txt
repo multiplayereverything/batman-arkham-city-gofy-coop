@@ -35,5 +35,7 @@ BmGame/Mods/BatCoop/scripts/Game/NpcBridge.cs
 BmGame/Mods/BatCoop/scripts/Game/Puppets.cs
 BmGame/Mods/BatCoop/scripts/Game/PvpBridge.cs
 BmGame/Mods/BatCoop/scripts/Game/PvpHooks.cs
+BmGame/Mods/BatCoop/scripts/Game/StoryHooks.cs
 BmGame/Mods/BatCoop/scripts/Game/SyncHooks.cs
+BmGame/Mods/BatCoop/scripts/Game/ThugShare.cs
 BmGame/Mods/BatCoop/scripts/Game/Tracker.cs

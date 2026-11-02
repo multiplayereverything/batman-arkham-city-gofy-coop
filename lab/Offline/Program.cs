@@ -667,6 +667,37 @@ Run("display_repair", () =>
     Check("display_repair", ok, $"tiny {saved} -> {fix}; only [SystemSettings] changed, CRLF kept; a usable size is left alone");
 });
 
+Run("world_info_follow", () =>
+{
+    // 0.4.1: the host's world tells guests whether it is in a game, how long it has played, its in-map story
+    // change and its cutscene; the guest follows without the opening movie once the host is past it.
+    var wi = new WorldInfo("CW", "Host", "batentry?Movie=0_CW_Intro?StreamMovie?Area=CW,CW_C1?Start=CW_Start", true, 42.5f, "CW_C2|CW_Entrance|3", "CW.TheWorld:PersistentLevel.Main_Sequence.SeqAct_Interp_7|2");
+    var r = new WireReader(wi.Encode()); r.U8();
+    var back = WorldInfo.Decode(ref r);
+    var stripped = StartUrl.StripMovie(wi.Url);
+    bool ok = back == wi && stripped == "batentry?Area=CW,CW_C1?Start=CW_Start";
+    Check("world_info_follow", ok, $"round trip={back == wi}; follow url '{stripped}'");
+});
+
+Run("npc_attack_relay", () =>
+{
+    // A host thug's attack on a guest's puppet reaches that guest as a queued attack by the NPC's shared id;
+    // one from an older epoch (the NPCs were renumbered) is dropped.
+    var toGuest = new List<byte[]>();
+    var host = new NpcHost((to, rel, b) => toGuest.Add(b));
+    var port = new OneNpcPort();
+    host.Tick(port, [Vector3.Zero], 1);
+    uint id = host.IdOf(OneNpcPort.Handle);
+    host.SendAttack(1, id);
+    var guest = new NpcGuest((to, rel, b) => { });
+    foreach (var b in toGuest) { var rr = new WireReader(b); rr.U8(); guest.Receive(ref rr, 1); }
+    bool queued = guest.Attacks.Count == 1 && guest.Attacks.Peek() == id;
+    guest.Attacks.Clear();
+    var stale = new WireWriter().U8(NpcHost.Channel).U8((byte)NpcMsg.Attack).U32(host.Epoch - 1).U32(id).ToArray();
+    var rs = new WireReader(stale); rs.U8(); guest.Receive(ref rs, 2);
+    Check("npc_attack_relay", id != 0 && queued && guest.Attacks.Count == 0, $"npc id {id}; queued={queued}; stale epoch dropped={guest.Attacks.Count == 0}");
+});
+
 Console.WriteLine($"RESULT: {(failed == 0 ? "PASS" : "FAIL")} ({passed} passed, {failed} failed{(failed > 0 ? ": " + string.Join(", ", failures) : "")})");
 return failed == 0 ? 0 : 1;
 
@@ -675,4 +706,12 @@ static class Refs
     // Hex ids for animcheck: a player's own body is 0x100+id, the puppet showing them elsewhere 0x200+id.
     public static string Player(byte id) => $"0x{0x100 + id:X}";
     public static string Puppet(byte id) => $"0x{0x200 + id:X}";
+}
+
+sealed class OneNpcPort : INpcHostPort
+{
+    public const long Handle = 0x1234;
+    public IEnumerable<NpcSample> Sample() { yield return new NpcSample(Handle, "CW.TheWorld:PersistentLevel.RPawnVillainThug_3", "BmScript.RPawnVillainThug", "", new NpcState { Pos = new Vector3(100, 0, 0), Health = 100 }); }
+    public void ApplyHit(long handle, in NpcHit hit) { }
+    public PoseCall? ReadPose(long handle) => null;
 }

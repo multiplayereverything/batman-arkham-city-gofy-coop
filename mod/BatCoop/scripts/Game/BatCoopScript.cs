@@ -32,6 +32,8 @@ public sealed class BatCoopScript : Script
     double _labEnterAt = -1;
     Resolution? _displayFix;   // the resolution DisplayGuard put back this start
     int _displayResizeTries;
+    bool _displayWatch;
+    double _nextDisplayWatch;
     (Vector3 center, float radius, double start, double end)? _labWalk;
     readonly List<(double until, string text)> _toasts = [];
     StreamWriter? _log;
@@ -55,6 +57,7 @@ public sealed class BatCoopScript : Script
     readonly LabCombat _labCombat = new();
     CoopUi? _ui;
     PvpBridge? _pvp;
+    ThugShare? _thugs;
     HostSettings _hostSettings = new();
     bool _settingsSent;
     string _iniPath = "";       // lab: also replay our own transitions on the first remote player's puppet
@@ -104,6 +107,11 @@ public sealed class BatCoopScript : Script
         _binder.Animated = _cfg.Bool("NpcAnimations", true);
         _session.Vote.SkipNow += DoSkip;
         _puppets = new PuppetManager(Log);
+        if (_cfg.Bool("ThugsTargetGuests", true))
+        {
+            _thugs = new ThugShare(Log);
+            _thugs.IsMirror = p => _binder?.MirrorOf(p) != null;
+        }
         _tracker = new Tracker();
         _tracker.Mode = _cfg.Str("Markers", "all").ToLowerInvariant() switch { "screen" => TrackMode.ScreenOnly, "off" => TrackMode.Off, _ => TrackMode.All };
         if (_cfg.Str("PuppetMode", "animated").Equals("kinematic", StringComparison.OrdinalIgnoreCase)) _puppets.Mode = PuppetMode.Kinematic;
@@ -120,7 +128,8 @@ public sealed class BatCoopScript : Script
         // A script reload in the middle of a game gets no OnEnterGame: a world with our pawn in it is entered.
         try { if (LocalWorld.TryGetPawn() != null) _enteredWorld = BmSDK.Framework.Game.GetWorldInfo().Ptr; } catch { }
 
-        if (_cfg.Bool("DisplayGuard", true))
+        _displayWatch = _cfg.Bool("DisplayGuard", true);
+        if (_displayWatch)
         {
             try
             {
@@ -300,7 +309,8 @@ public sealed class BatCoopScript : Script
     void SkipTick(double now)
     {
         if (_skipTries <= 0 || now < _nextSkipTry) return;
-        if (!IsInCutscene()) { Log("cutscene skipped"); _skipTries = 0; return; }
+        bool movie = InFullScreenMovie();
+        if (!IsInCutscene() && !movie) { Log("cutscene skipped"); _skipTries = 0; return; }
         _skipTries--;
         _nextSkipTry = now + 0.6;
         _skipping = true;
@@ -311,11 +321,13 @@ public sealed class BatCoopScript : Script
             var pc = BmSDK.Framework.Game.GetPlayerController();
             pc.SkipCutscene();
             pc.SkipCutscene();
-            Log($"skip: asked the game ({_skipTries} tries left)");
+            // A full-screen movie still playing after the presses (the second try on) is stopped outright.
+            if (movie && _skipTries < 3) { _Engine.StopMovie(false); Log("skip: stopped the movie"); }
+            Log($"skip: asked the game ({_skipTries} tries left{(movie ? ", movie" : "")})");
         }
         catch (Exception e) { Log("skip failed: " + e.Message); }
         finally { _skipping = false; }
-        if (_skipTries == 0 && IsInCutscene())
+        if (_skipTries == 0 && (IsInCutscene() || InFullScreenMovie()))
         {
             Log("skip: the game did not skip this cutscene");
             _unskippable = true;
@@ -337,6 +349,7 @@ public sealed class BatCoopScript : Script
             _worldPtr = wi;
             _puppets?.Forget();
             _pvp?.Forget();
+            _thugs?.Forget();
             if (_session != null) _binder?.ForgetAll(_session.NpcGuest);
             if (_session is { InRoom: true, IsHost: false }) _session.World.Resync();
             _inputHeld = _heldMove = _heldLook = false;   // the new world has a new controller
@@ -347,13 +360,38 @@ public sealed class BatCoopScript : Script
         return wi != IntPtr.Zero && !_traveling;
     }
 
+    void ThugTick()
+    {
+        var s = _session!;
+        if (_thugs == null || _puppets == null || !s.InRoom) return;
+        var pawn = LocalWorld.TryGetPawn();
+        try
+        {
+            if (s.IsHost) _thugs.HostTick(s, _puppets, pawn, _world.Now);
+            else if (pawn is RPawnPlayer me && _binder != null) _thugs.GuestTick(s, _binder, me, _world.Now);
+        }
+        catch (Exception e) { _thugs.LastError = e.GetType().Name + ": " + e.Message; }
+    }
+
+    /// <summary>Damage to a player pawn (SyncHooks). False = drop it: puppets never take damage on this machine
+    /// (their owner's game decides), and a guest's thug copies hurt only through an attack the host started.</summary>
+    internal bool FilterPlayerDamage(RPawnPlayer self, Controller? by, Actor? causer)
+    {
+        if (_session is not { InRoom: true } s) return true;
+        if (_puppets != null && _puppets.All.Values.Any(p => p.Pawn.Ptr == self.Ptr)) return false;
+        if (s.IsHost || _thugs == null) return true;
+        var me = LocalWorld.TryGetPawn();
+        if (me == null || me.Ptr != self.Ptr) return true;
+        return _thugs.OnLocalDamage(by?.Pawn ?? causer as Pawn);
+    }
+
     void RoomTick()
     {
         var s = _session!;
         double now = _world.Now;
         if (!s.InRoom)
         {
-            if (_wasInRoom) { _binder?.ReleaseAll(s.NpcGuest); _ui?.CloseAll(); Log("left the room: NPCs handed back to local AI"); }
+            if (_wasInRoom) { _thugs?.HostReset(LocalWorld.TryGetPawn()); _binder?.ReleaseAll(s.NpcGuest); _ui?.CloseAll(); Log("left the room: NPCs handed back to local AI"); }
             MenuInputTick(LocalWorld.TryGetPawn());
             _wasInRoom = false;
             _settingsSent = false;
@@ -378,7 +416,8 @@ public sealed class BatCoopScript : Script
         var pawn = LocalWorld.TryGetPawn();
         MenuInputTick(pawn);
         // Cutscene vote: tell the host whether we are watching a cutscene.
-        bool inCutscene = InGameWorld && pawn != null && IsInCutscene();
+        // A full-screen movie (the opening movie of a new game, chapter movies) counts too, outside the main menu.
+        bool inCutscene = (InGameWorld && pawn != null && IsInCutscene()) || (!IsFrontEnd(_world.WorldName) && InFullScreenMovie());
         if (!inCutscene) _unskippable = false;
         bool watching = _labWatching ?? (inCutscene && !_unskippable);
         s.Vote.LocalWatching(watching, s.IsHost, s.LocalId);
@@ -397,31 +436,233 @@ public sealed class BatCoopScript : Script
             }
         }
 
-        // Same mission, same map: a guest follows the host into its map.
-        if (!s.IsHost && _worldPort?.TravelTo is { } map && pawn != null && now >= _travelNotBefore)
-        {
-            _worldPort.TravelTo = null;
-            if (map != _lastTravel || now >= _travelNotBefore + 60)
-            {
-                _lastTravel = map;
-                _travelNotBefore = now + 20;
-                var url = _worldPort.HostUrl(map);
-                // "start" is how BmSDK's own demo enters a world; "open" from inside a running game closed it.
-                var cmd = _cfg.Str("FollowCommand", "start") + " " + url;
-                Toast($"Following the host to {map}");
-                Log("following host: " + cmd);
-                // The load can happen inside this call: touch no actor until the new world is in place.
-                _traveling = true;
-                _travelStarted = now;
-                _puppets?.Forget();
-                _pvp?.Forget();
-                    _binder?.ForgetAll(s.NpcGuest);
-                try { BmSDK.Framework.Game.GetPlayerController().ConsoleCommand(cmd, false); }
-                catch (Exception e) { Log("follow failed: " + e.Message); }
-                return;
-            }
-        }
+        if (s.IsHost) HostWorldTick(pawn, now);
+        else GuestFollowTick(s, pawn, now);
     }
+
+    // ---------- the host's world: guests join it and follow it ----------
+
+    string _hostStage = "";
+    int _hostStages;
+    IntPtr _playingWorld;
+    double _playingSince;
+
+    static bool IsFrontEnd(string map) => map.Length == 0 || map.Equals("FrontEnd", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Host: what WorldInfo tells guests (sent at once when it changes).</summary>
+    void HostWorldTick(Pawn? pawn, double now)
+    {
+        var s = _session!;
+        var map = _world.WorldName;
+        s.LocalUrl = IsFrontEnd(map) ? "" : GameWorldPort.LocalUrl();
+        s.LocalInGame = !IsFrontEnd(map);
+        bool playing = InGameWorld && pawn != null && !InFullScreenMovie();
+        if (playing && _playingWorld != _worldPtr) { _playingWorld = _worldPtr; _playingSince = now; }
+        // 0 while loading or watching the opening movie: a guest following then keeps the movie.
+        s.LocalSeconds = _playingWorld == _worldPtr && _playingWorld != IntPtr.Zero ? (float)(now - _playingSince) : 0;
+        s.LocalStage = _hostStage;
+        HostCineTick(now);
+        s.LocalCine = _hostCine;
+    }
+
+    // ---------- story cutscenes (Matinee): the host's game plays them, guests play the same one ----------
+
+    string _hostCine = "", _hostCinePath = "";
+    int _hostCines;
+    double _nextCineScan;
+    string _appliedCine = "";
+
+    /// <summary>The story cutscene playing on this machine (a skippable Matinee in cinematic mode), or "".</summary>
+    static string PlayingCine()
+    {
+        if (!IsInCutscene()) return "";
+        foreach (var i in BmSDK.Framework.Game.FindObjects<SeqAct_Interp>())
+        {
+            try { if (i.IsValid && i.bIsPlaying && i.bIsSkippable) return i.GetPathName(null) ?? ""; }
+            catch { }
+        }
+        return "";
+    }
+
+    void HostCineTick(double now)
+    {
+        if (now < _nextCineScan) return;
+        _nextCineScan = now + 0.25;
+        string path = "";
+        try { path = InGameWorld ? PlayingCine() : ""; } catch { }
+        if (path == _hostCinePath) return;
+        _hostCinePath = path;
+        _hostCine = path.Length == 0 ? "" : $"{path}|{++_hostCines}";
+        if (path.Length > 0) Log("cutscene: " + path);
+    }
+
+    /// <summary>Guest: our story cutscenes start from the same (synced) story as the host's; this ends ours when the
+    /// host's ends or is skipped, so both games come out of it together. A cutscene is never started from here:
+    /// SeqAct_Interp.ForceActivateInput called from a script killed the game (lab, CW, 0.4.1).</summary>
+    void GuestCineTick(Core.WorldInfo hw)
+    {
+        if (hw.Cine == _appliedCine || !_cfg.Bool("CutsceneSync", true)) return;
+        var ended = _appliedCine.Length > 0 ? _appliedCine[.._appliedCine.LastIndexOf('|')] : "";
+        _appliedCine = hw.Cine;
+        if (hw.Cine.Length > 0) Log($"cutscene sync: the host plays {hw.Cine[..hw.Cine.LastIndexOf('|')]}");
+        if (ended.Length == 0) return;
+        string ours = "";
+        try { ours = PlayingCine(); } catch { }
+        if (ours != ended) return;
+        Log($"cutscene sync: the host's {ended} is over; ending ours");
+        CinesEnded++;
+        _skipTries = 4;
+        _nextSkipTry = 0;
+    }
+
+    public long CinesEnded;
+
+    /// <summary>Called by StoryHooks after the host's (or a solo player's) in-map story change.</summary>
+    internal void NoteHostStage(string levels, string entrance)
+    {
+        _hostStage = $"{levels}|{entrance}|{++_hostStages}";
+        Log("map change: " + _hostStage);
+    }
+
+    double _nextRefuseToast;
+
+    internal void RefuseGuestStart()
+    {
+        Log("guest: refused to start a game of our own; waiting for the host's");
+        if (_world.Now < _nextRefuseToast) return;
+        _nextRefuseToast = _world.Now + 4;
+        Toast(_session?.HostWorld is { InGame: true }
+            ? "Only the host starts games: you are joining the host's game"
+            : "Only the host starts games: you join the host's game as soon as they start one", 8);
+    }
+
+    /// <summary>A guest's own game may start a world only while following the host, never from the menu.</summary>
+    internal bool FollowingAllowed => _traveling || !IsFrontEnd(_world.WorldName);
+
+    string _appliedStage = "";
+    string _pendingStage = "";
+    double _stageDeadline;
+    bool _applyingStage;
+    double _nextStageRefuseLog;
+
+    /// <summary>A guest's own game asks for an in-map story change: refused unless it is the host's.</summary>
+    internal bool RefuseOwnMapChange(string levels, string phase)
+    {
+        if (_applyingStage || _traveling || !_cfg.Bool("HostMapChanges", true)) return false;
+        if (_session?.HostWorld is not { InGame: true } hw) return false;
+        if (!string.Equals(hw.World, _world.WorldName, StringComparison.OrdinalIgnoreCase)) return false;
+        if (_world.Now >= _nextStageRefuseLog)
+        {
+            _nextStageRefuseLog = _world.Now + 3;
+            Log($"guest: our game asked for a map change ({phase} {levels}); the host's game decides, refused");
+            Toast("Your game wanted to move the story on: it moves on when the host's game does", 8);
+        }
+        return true;
+    }
+
+    /// <summary>Guest: make the host's in-map change (prepare, wait until loaded, commit).</summary>
+    void GuestStageTick(Core.WorldInfo hw, double now)
+    {
+        if (!_cfg.Bool("HostMapChanges", true)) return;
+        if (hw.Stage.Length == 0 || hw.Stage == _appliedStage) return;
+        var parts = hw.Stage.Split('|');
+        if (_pendingStage != hw.Stage)
+        {
+            _pendingStage = hw.Stage;
+            _stageDeadline = now + 60;
+            Log($"following the host's map change: {hw.Stage}");
+            Toast("Following the host's story");
+            try
+            {
+                _applyingStage = true;
+                var pawn = LocalWorld.TryGetPawn();
+                if (pawn == null || !BmSDK.Framework.Game.GetGameRI().PrepareMapChange(StoryHooks.Levels(parts[0]), pawn))
+                    Log("map change: prepare refused");
+            }
+            catch (Exception e) { Log("map change prepare failed: " + e.Message); _appliedStage = hw.Stage; }
+            finally { _applyingStage = false; }
+            return;
+        }
+        try
+        {
+            var gri = BmSDK.Framework.Game.GetGameRI();
+            var arr = StoryHooks.Levels(parts[0]);
+            var pawn = LocalWorld.TryGetPawn();
+            bool ready = pawn != null && gri.IsMapChangeReady(arr, pawn);
+            if (!ready && now < _stageDeadline) return;
+            _applyingStage = true;
+            gri.CommitMapChange(arr, new FName(parts.Length > 1 ? parts[1] : "None"), false);
+            Log($"map change committed ({(ready ? "ready" : "timed out waiting, committed anyway")})");
+        }
+        catch (Exception e) { Log("map change commit failed: " + e.Message); }
+        finally { _applyingStage = false; _appliedStage = hw.Stage; }
+    }
+
+    static bool InFullScreenMovie()
+    {
+        try { return BmSDK.Framework.Game.GetPlayerController() is RPlayerController pc && pc.IsPlayingFullScreenMovie(true); }
+        catch { return false; }
+    }
+
+    double _nextWaitToast;
+
+    /// <summary>Guest: be where the host is. From the main menu, from another map, or after the host started a new
+    /// game; on the temp save slot, so the guest's own saves are never written with the host's story.</summary>
+    void GuestFollowTick(CoopSession s, Pawn? pawn, double now)
+    {
+        var here = _world.WorldName;
+        var hw = s.HostWorld;
+        string? map = null;
+        if (hw is { InGame: true } && !IsFrontEnd(hw.World) && !string.Equals(hw.World, here, StringComparison.OrdinalIgnoreCase))
+            map = hw.World;
+        if (_worldPort?.TravelTo is { } t) { _worldPort.TravelTo = null; map ??= t; }
+
+        if (hw is { InGame: true } && string.Equals(hw.World, here, StringComparison.OrdinalIgnoreCase) && InGameWorld && pawn != null)
+        {
+            GuestStageTick(hw, now);
+            GuestCineTick(hw);
+        }
+        else if (hw is { InGame: false } && !IsFrontEnd(here) && pawn != null && now >= _nextWaitToast)
+        {
+            _nextWaitToast = now + 60;
+            Toast("The host is in the main menu: you join their game when they start one", 8);
+        }
+
+        if (map == null || now < _travelNotBefore) return;
+        bool inMenu = IsFrontEnd(here);
+        if (!inMenu && (pawn == null || !InGameWorld)) return; // loading: wait for the world to settle
+        if (map == _lastTravel && now < _travelNotBefore + 40) return;
+        _lastTravel = map;
+        _travelNotBefore = now + 20;
+        var url = hw is { Url.Length: > 0 } && string.Equals(hw.World, map, StringComparison.OrdinalIgnoreCase) ? hw.Url : _worldPort?.HostUrl(map) ?? map;
+        // The host is past its opening movie: skip ours and arrive while the host plays.
+        if (hw is not { Seconds: < 15f }) url = StartUrl.StripMovie(url);
+        // "start" is how BmSDK's own demo enters a world; "open" from inside a running game closed it.
+        var cmd = _cfg.Str("FollowCommand", "start") + " " + url;
+        Toast(inMenu ? $"Joining the host's game ({map})" : $"Following the host to {map}");
+        Log("following host: " + cmd);
+        // The load can happen inside this call: touch no actor until the new world is in place.
+        _traveling = true;
+        _travelStarted = now;
+        _appliedStage = _pendingStage = "";
+        _puppets?.Forget();
+        _pvp?.Forget();
+        _thugs?.Forget();
+        _binder?.ForgetAll(s.NpcGuest);
+        try
+        {
+            // Guests play the host's story on the temp slot: their own saves are never written with it.
+            BmSDK.Framework.Game.GetGameRI().SaveGameManager.SetActiveStorySlotID(RSaveGameManager.StorySlots.StorySlot_Temp);
+        }
+        catch (Exception e) { Log("temp save slot: " + e.Message); }
+        try
+        {
+            if (inMenu) BmSDK.Framework.Game.GetConsole().ConsoleCommand(cmd);
+            else BmSDK.Framework.Game.GetPlayerController().ConsoleCommand(cmd, false);
+        }
+        catch (Exception e) { Log("follow failed: " + e.Message); _traveling = false; }
+    }
+
 
     /// <summary>Sends each new transition of our own pawn (a strike, a counter, a stance change) to everyone.</summary>
     void PoseTick()
@@ -646,6 +887,20 @@ public sealed class BatCoopScript : Script
             }
             catch (Exception e) { _displayResizeTries = 0; Log("display: resize failed: " + e.Message); }
         }
+        if (_displayWatch && _world.Now >= _nextDisplayWatch)
+        {
+            _nextDisplayWatch = _world.Now + 1;
+            try
+            {
+                if (DisplayGuard.Watch(Log) is { } r)
+                {
+                    _nextDisplayWatch = _world.Now + 5;   // let the game take the new size before looking again
+                    try { DisplaySettings.WriteFile(DisplaySettings.EngineIni, r with { Fullscreen = false }); } catch { }
+                    Toast($"BatCoop gave the game window its size back ({r.X}x{r.Y})", 8);
+                }
+            }
+            catch (Exception e) { _displayWatch = false; Log("display watch stopped: " + e.Message); }
+        }
         if (_labQuiet)
         {
             if (_labEnterAt > 0 && _world.Now >= _labEnterAt) { _labEnterAt = 0; EnterTestWorld(); }
@@ -669,6 +924,7 @@ public sealed class BatCoopScript : Script
             if (!InGameWorld) { ServeBridge(); return; } // main menu or still loading: no puppets yet
             _puppets?.Update(_session, _world.WorldName, _world.Now);
             if (_puppets != null) _pvp?.Tick(_session, _puppets, _world.Now);
+            ThugTick();
             ProbeTick();
             ServeBridge();
         }
@@ -969,6 +1225,7 @@ public sealed class BatCoopScript : Script
                         ("dist", Vector3.Distance(n.Location, mePos))))).ToList();
                 var mirrors = _session!.NpcGuest.Mirrors.Values.Take(8).Select(m => new LabBridge.RawJson(LabBridge.Json(
                     ("id", (int)m.Info.Id), ("key", m.Info.Key), ("bound", m.Local is RBMPawnAI), ("spawned", m.Spawned),
+                    ("local_class", m.Local is RBMPawnAI lc && lc.IsValid ? lc.Class.Name.ToString() : ""),
                     ("local_pos", m.Local is RBMPawnAI lp && lp.IsValid ? lp.Location : (object?)null), ("host_pos", m.Latest.Pos),
                     ("local_health", m.Local is RBMPawnAI lh && lh.IsValid ? lh.Health : -1), ("host_health", (int)m.Latest.Health),
                     ("host_down", (m.Latest.Flags & NpcFlags.Down) != 0), ("local_down", m.Local is RBMPawnAI ld && ld.IsValid && NpcHostPort.IsDown(ld)),
@@ -1019,6 +1276,37 @@ public sealed class BatCoopScript : Script
                 var thug = new RPawnVillainThug(me.Location + new Vector3(250, 0, 0), me.Rotation);
                 if (thugChar != null) thug.InitCharacter(thugChar);
                 return Ok(("key", thug.GetPathName(null)), ("char", thugChar?.GetPathName(null)));
+            case "interps" when parts.Length > 1 && parts[1] == "all":
+                // Lab: the skippable cutscenes of the loaded levels (to replay one as the host's).
+            {
+                var all = BmSDK.Framework.Game.FindObjects<SeqAct_Interp>().Where(i => i.IsValid).ToList();
+                return Ok(("count", all.Count), ("skippable", all.Where(i => i.bIsSkippable).Select(i => i.GetPathName(null)).Take(40).ToList()),
+                          ("other", all.Where(i => !i.bIsSkippable).Select(i => i.GetPathName(null)).Take(15).ToList()));
+            }
+            case "menugate":
+            {
+                // Lab: would this main-menu entry be refused (a guest opens no world of its own)? Never clicks it: a
+                // click that went through would start a game on the active save slot.
+                var item = System.Enum.Parse<BmSDK.BmScript.RGFxMovieUI_MainMenu.MainMenuItems>(parts[1]);
+                bool blocked = StoryHooks.BlocksMenuItem((int)item);
+                if (blocked) RefuseGuestStart();
+                return Ok(("item", item.ToString()), ("blocked", blocked), ("clicks_seen", SyncHooks.Calls.GetValueOrDefault("MainMenu.OnClicked")));
+            }
+            case "interps":
+            {
+                var playing = BmSDK.Framework.Game.FindObjects<SeqAct_Interp>().Where(i => i.IsValid && i.bIsPlaying)
+                    .Select(i => new LabBridge.RawJson(LabBridge.Json(("path", i.GetPathName(null)), ("pos", i.Position), ("skippable", i.bIsSkippable)))).ToList();
+                return Ok(("cinematic", IsInCutscene()), ("movie", InFullScreenMovie()), ("playing", playing), ("host_cine", _hostCine),
+                          ("applied_cine", _appliedCine), ("seen_host", _session?.HostWorld?.Cine ?? ""), ("ended_with_host", CinesEnded));
+            }
+            case "thugs":
+                if (_thugs == null) return Ok(("enabled", false));
+                return Ok(("enabled", true), ("fighting_guests", _thugs.FightingGuests), ("retargets", _thugs.Retargets),
+                          ("attacks_sent", _thugs.AttacksSent), ("npc_attacks_sent", _session!.NpcHost.AttacksSent),
+                          ("attacks_received", _session.NpcGuest.AttacksReceived), ("attacks_played", _thugs.AttacksPlayed),
+                          ("forced", _thugs.ForcedAttacks), ("countered", _thugs.Countered), ("hits_applied", _thugs.HitsApplied),
+                          ("hits_taken", _thugs.HitsTaken), ("open", _thugs.OpenDefenses), ("error", _thugs.LastError),
+                          ("near", NearThugs()));
             case "pvp":
                 if (_pvp == null) return Ok(("available", false));
                 return Ok(("pvp", _pvp.LabState(s)), ("hooks_blocked", PvpHooks.BlockedAttacks), ("target_overrides", PvpHooks.TargetOverrides));
@@ -1070,9 +1358,33 @@ public sealed class BatCoopScript : Script
                 if (parts.Length > 2) BmSDK.Framework.Game.LoadPackage(parts[2]);
                 var charCls = BmSDK.Framework.Game.FindObject<Class>(parts.Length > 1 ? parts[1] : "BmScript.RCharacter_JokerThug1");
                 var thugCls = BmSDK.Framework.Game.FindObject<Class>("BmGame.RPawnVillainThug");
+                // Never hand the engine a null class: it crashes the game (the character is not loaded in every map).
+                if (charCls == null || thugCls == null) throw new InvalidOperationException("character class not loaded here");
                 var dir2 = new Rotator(0, me2.Rotation.Yaw, 0).ToDirection() with { Z = 0 };
                 var ai = RCharacter.StaticCreatePawn(me2.Location + dir2 * 300, new Rotator(0, me2.Rotation.Yaw + 180, 0), null!, thugCls!, charCls!, true, FName.None, FName.None);
                 return Ok(("key", ai?.GetPathName(null)), ("controller", ai?.Controller?.Class.Name.ToString()), ("health", ai?.Health ?? -1));
+            case "thugspot":
+            {
+                // Lab: where the nearest thug with its AI stands (the bot guest is put next to it).
+                var sp = LocalWorld.TryGetPawn() ?? throw new InvalidOperationException("no pawn");
+                var spotThug = BmSDK.Framework.Game.FindObjects<RPawnVillain>()
+                    .Where(v => NpcHostPort.IsLive(v) && !NpcHostPort.IsDown(v) && v.Controller is RBMAIController)
+                    .OrderBy(v => Vector3.Distance(v.Location, sp.Location)).FirstOrDefault() ?? throw new InvalidOperationException("no thug");
+                return Ok(("key", spotThug.GetPathName(null)), ("pos", spotThug.Location));
+            }
+            case "thugfight":
+                // Lab: the live thug nearest a guest's puppet is put next to it and starts a fight (its own AI).
+                var fp = _puppets?.All.Values.FirstOrDefault() ?? throw new InvalidOperationException("no puppet");
+                var fthug = BmSDK.Framework.Game.FindObjects<RPawnVillain>()
+                    .Where(v => NpcHostPort.IsLive(v) && !NpcHostPort.IsDown(v) && v.Controller is RBMAIController)
+                    .OrderBy(v => Vector3.Distance(v.Location, fp.Pawn.Location)).FirstOrDefault() ?? throw new InvalidOperationException("no thug");
+                // The thug stays where it is (a moved thug walks back to its post): the test stands the bot next to it.
+                var fctrl = (RBMAIController)fthug.Controller!;
+                // A fight starts with the host, as the game's own would; the guest standing nearer takes it over.
+                if (LocalWorld.TryGetPawn() is RPawnPlayerCombat fhost) fthug.SetTargetPlayer(fhost);
+                if (!fctrl.bInCombat) fctrl.EnterCombat(true, true);
+                return Ok(("key", fthug.GetPathName(null)), ("controller", fctrl.Class.Name.ToString()), ("in_combat", fctrl.bInCombat),
+                          ("dist", (int)Vector3.Distance(fthug.Location, fp.Pawn.Location)));
             case "hit":
                 // Lab: hit the nearest NPC the way the game does (TakeDamage), so the co-op hooks route it.
                 var hp = LocalWorld.TryGetPawn() ?? throw new InvalidOperationException("no pawn");
@@ -1159,6 +1471,17 @@ public sealed class BatCoopScript : Script
             "npc" => BmSDK.Framework.Game.FindObjects<RBMPawnAI>().Where(NpcHostPort.IsLive).OrderBy(n => Vector3.Distance(n.Location, me)).FirstOrDefault(),
             _ => throw new ArgumentException("unknown root " + name),
         };
+    }
+
+    /// <summary>Lab: the thugs nearest a guest's puppet, with their fight state.</summary>
+    List<LabBridge.RawJson> NearThugs()
+    {
+        var at = _puppets?.All.Values.FirstOrDefault()?.Pawn.Location ?? LocalWorld.TryGetPawn()?.Location ?? Vector3.Zero;
+        return BmSDK.Framework.Game.FindObjects<RPawnVillain>().Where(NpcHostPort.IsLive)
+            .OrderBy(v => Vector3.Distance(v.Location, at)).Take(4)
+            .Select(v => new LabBridge.RawJson(LabBridge.Json(("key", v.Name.ToString()), ("dist", (int)Vector3.Distance(v.Location, at)),
+                ("ctrl", v.Controller?.Class.Name.ToString()), ("in_combat", v.Controller is RBMAIController c && c.bInCombat),
+                ("target", v.GetTargetPlayer()?.Name.ToString()), ("move", v.CombatMove?.Class.Name.ToString())))).ToList();
     }
 
     string StateJson()

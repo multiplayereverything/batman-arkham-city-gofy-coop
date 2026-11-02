@@ -4,8 +4,8 @@ by NickBin (RealAnxiousGit)
 Roam Arkham City together. Every player runs their own game and sees the other players move through the
 city in real time. Friends join over Steam without opening ports, or over a direct IP address on a LAN or VPN.
 
-Status: **0.4.0, early**. Players walk, run and fight with the game's own animations; the story, missions, NPCs (with
-their fights and knock-outs) and cutscene skips are shared; markers on screen and a radar show where the other
+Status: **0.4.1, early**. Players walk, run and fight with the game's own animations; the story, missions, NPCs (with
+their fights and knock-outs), enemies attacking every player, story cutscenes and cutscene skips are shared; markers on screen and a radar show where the other
 players are; there is a chat and a host menu. See "What syncs" below. PVP is switched off and kept as a draft for a
 later version (see "PVP (draft, off)").
 
@@ -25,10 +25,26 @@ https://github.com/dege-diosg/dgVoodoo2/
 2. Copy the `BatCoop` folder into `<game folder>\BmGame\Mods\`, so you have
    `BmGame\Mods\BatCoop\mod.toml`, `scripts\` and `link\BatCoopLink.exe`.
 3. Start the game normally. BmSDK compiles BatCoop at start-up; `Binaries\Win32\BmSDK.log` says
-   `[BatCoop] ... compiled` and `BatCoop 0.4.0 ... loaded`.
+   `[BatCoop] ... compiled` and `BatCoop 0.4.1 ... loaded`.
 
 Updating from an older version: replace the whole `BatCoop` folder but keep your `BatCoop.ini`. **Everyone in a game
-needs 0.4.0**: 0.4 and 0.3 refuse each other with "Version mismatch" (the NPC messages changed).
+needs 0.4.1**: 0.4.1 refuses 0.4.0 and older with "Version mismatch" (the world and NPC messages changed).
+
+**0.4.1:**
+- **The host's game is the only game.** When the host starts or loads a game, every guest joins it by itself,
+  straight from the main menu (on the temporary save slot, so a guest's own saves are never written with the
+  host's story). A guest cannot start a game of their own: New Game, Continue, Catwoman's episodes, the story DLC
+  and the challenge maps say "Only the host starts games" while you are in a co-op room. A guest's game also no
+  longer moves the story on by itself (0.4.0 could leave a guest as Batman inside the host's Catwoman level after
+  her opening): in-level story changes happen when the host's do.
+- **Enemies fight every player.** A thug in a fight goes for whichever player is nearest, not only the host. Its
+  attack plays on that player's own screen as a real thug attack, with the counter icon: counter it, or take the hit.
+- **Cutscenes stay together.** Both games play the same story, so a level's cutscenes start in each game from the
+  same moment of the story; when the host's cutscene ends or is skipped, a guest still watching the same one comes
+  out of it too. A guest who joins after the host's opening movie skips it and arrives while the host plays.
+  (Starting a cutscene in a guest's game from the mod crashed the game in testing, so BatCoop never does that.)
+- **The tiny window after leaving fullscreen is fixed.** If the game window shrinks to a sliver (leaving fullscreen
+  with Alt+Enter or the options), BatCoop gives it your resolution back within a second.
 
 **0.4.0:**
 - **Knocked-out enemies now go down for guests too.** The guest's copy of a thug the host knocked out was "knocked
@@ -83,12 +99,15 @@ Your name is your Steam name unless you set `Name=` in `BatCoop.ini` (0.2 showed
 
 Settings are in `BmGame\Mods\BatCoop\BatCoop.ini` (created on first start): your name, `Transport=steam|direct`,
 `DirectAddress`, `DirectPort`, `MaxPlayers` (2-8, default 4), `LinkPort`, the chat and menu keys, the host's saved
-settings (`Host...` keys), `PuppetMode`, `Markers` and `NpcAnimations`.
+settings (`Host...` keys), `PuppetMode`, `Markers`, `NpcAnimations`, and (0.4.1, all on by default)
+`ThugsTargetGuests` (thugs fight every player), `CutsceneSync` (end cutscenes with the host), `HostMapChanges` (in-level
+story changes follow the host) and `DisplayGuard` (fix a tiny window or resolution); `=0` turns one off.
 
 ## How a co-op game works
 **The host's game is the story.** When you join, your story state (flags, chapter, side missions, objectives) is
-replaced by the host's, and your game follows the host's map. Play on the host's save; a guest's own save is not
-changed by the co-op game until that guest saves it.
+replaced by the host's, and your game follows the host's map. Guests wait in the main menu until the host starts
+or loads a game, then join it by themselves; a guest cannot start one of their own. Guests play on the temporary
+save slot, so their own saves are never touched by the co-op game.
 
 - **Missions:** everyone is always on the same mission. If any player starts a mission (walks into its trigger,
   finishes a step), the host takes it over and it starts for everyone at the same time. If the host goes into
@@ -103,7 +122,9 @@ changed by the co-op game until that guest saves it.
   Menus still open; the city keeps moving behind them, but your own character ignores your keys, mouse and pad until
   you close the menu.
 - **Finding each other:** markers on screen and a radar (F4), and F8 to go to your friend.
-- **Cutscenes:** during a story cutscene in a level, pressing skip is a vote. The overlay shows "Cutscene: 1/2 voted
+- **Enemies** go for whichever player is nearest. When one attacks you, you see it coming with the counter icon on
+  your own screen: counter it and your hit goes to the host's thug; miss it and you take the hit.
+- **Cutscenes:** when the host's story cutscene ends or is skipped, guests watching it come out of it too. During a story cutscene in a level, pressing skip is a vote. The overlay shows "Cutscene: 1/2 voted
   to skip"; when everyone watching has voted, the cutscene is skipped for everyone at the same moment. The host can
   set this to "host only". Anywhere else (menus, loading movies, normal play) the skip key works as in the normal
   game and is not a vote. If the game will not skip a cutscene, the overlay says so and stops counting votes for it.
@@ -138,7 +159,7 @@ with a real thug attack (counter icon, counter window), and either they counter 
 hit lands. Each player also has an invisible stand-in thug inside their character on your screen, so freeflow
 combat aims at them and the counter icon shows over them.
 
-## What syncs (0.4.0)
+## What syncs (0.4.1)
 | Synced | How |
 |---|---|
 | Every player's position, facing and velocity | 20 times a second, smoothed on the other machines (100 ms interpolation, short extrapolation, teleports snap) |
@@ -147,7 +168,11 @@ combat aims at them and the counter icon shows over them.
 | Which character each player is | Remote players appear as that character's player model when it is loaded in your world, otherwise as Batman |
 | Story flags (missions, doors, events), chapter, 26 side-mission chapters, objectives | Host reads them 4 times a second and sends every change as one numbered step; guests apply steps in order. Joiners get a snapshot; every 5 s guests send a check value and the host repairs any difference |
 | A guest's own progress (a mission it starts, a step it completes) | Sent to the host as a request; the host applies it and it comes back to everyone (flags only switch on, chapters only go up this way; anything a guest loses is restored by the host) |
-| The host's map | Guests travel to it with the host's own start URL |
+| The host's game | Guests in the main menu join it as soon as the host is in one; a guest cannot start a game of its own while in a room |
+| The host's map | Guests travel to it with the host's own start URL (without the opening movie once the host is past it) |
+| In-level story changes (Catwoman's opening handing over to Bruce Wayne...) | Made by the host's game and sent to guests, who make the same change; a guest's own game asking for one is refused |
+| Story cutscenes | The host reports the cutscene it plays; when it ends, a guest playing the same one ends it too (the guests' cutscenes start from the synced story, never forced) |
+| Thugs attacking | The host's thugs pick the nearest player; an attack on a guest is sent to that guest and played there as a real thug attack (counter window, counter or hit) |
 | NPCs within 60 m of any player | Host streams position, facing, speed, health, knocked-out, ragdoll and hidden 10 times a second; guests drive the same level NPC (or spawn one of the same class and character) with the game's movement animations |
 | NPC animations | Every new animation transition of a shared NPC (attacks, hit reactions, knock-downs, idle actions) is sent once and replayed on the guest's copy after the same delay as its position; a guest that joins later gets each NPC's current stance |
 | Knock-outs | A thug is down when the game marks it dead or knocked out (not only at 0 health); the guest's copy is knocked out once with a real strike and stays down |
@@ -163,13 +188,19 @@ combat aims at them and the counter icon shows over them.
 story flags, gliding and grappling animations (the character follows the exact position there, in its last pose),
 and exactly where a ragdolled body comes to rest (each game lets it fall by itself, close to where the host's lies).
 
-**Known limits of 0.4.0** (please report what you see):
+**Known limits of 0.4.1** (please report what you see):
 - Not yet tested with two real players (see MODLOG): the two-player parts were tested with one real game and a bot.
 - The other player's character can lag behind them by up to a meter or two for a moment when they turn sharply or
   climb over things while running (animated characters walk the real floor). `PuppetMode=kinematic` in
   `BatCoop.ini` shows exact positions without movement animation, like 0.2.
 - The cutscene vote was checked with the lab's stand-in for "watching a cutscene" and with real skip presses outside
   cutscenes; a vote skipping a real story cutscene in two real games has not been tested yet.
+- Thugs go for a guest only in a fight the host's game has started, and only when the guest is within about 6 m of
+  them and clearly nearer than the host. A thug fighting a guest does not swing at the host meanwhile.
+- Cutscenes are never started on a guest by BatCoop (doing that from a script crashed the game): a guest's
+  cutscene plays when its own synced story starts it, and BatCoop only ends it together with the host's.
+- Refusing New Game/Continue in the menu and following the host's in-level story changes were tested with lab
+  commands, not with real menu clicks or a real Catwoman-to-Batman hand-over in two games.
 
 ## How it works
 - `scripts\Core`: game-independent code (wire format, session, interpolation, world/story sync, NPC sync, cutscene
@@ -209,7 +240,10 @@ and exactly where a ragdolled body comes to rest (each game lets it fall by itse
   it saves the window's size as your resolution (`Documents\WB Games\Batman Arkham City GOTY\BmGame\Config\BmEngine.ini`,
   `[SystemSettings]` `ResX`/`ResY`/`Fullscreen`), so a shrunk window comes back at every start. Since 0.3.1 BatCoop
   notices a saved size below 640x360, resizes the window at once and puts back the launcher's resolution (or the
-  desktop's, fullscreen) after the game quits. `DisplayGuard=0` in `BatCoop.ini` turns this off.
+  desktop's, fullscreen) after the game quits. Since 0.4.1 it also watches the window while you play: if it shrinks
+  below 640x360 (leaving fullscreen), it is resized to your resolution within a second. `DisplayGuard=0` in
+  `BatCoop.ini` turns this off.
+- **"Version mismatch"**: 0.4.1 only plays with 0.4.1 (protocol `batcoop-5`); everyone updates.
 
 ## Building from source and the testing lab
 See `lab/README.md`. In short:

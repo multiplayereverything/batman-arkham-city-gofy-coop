@@ -8,6 +8,7 @@ One PC cannot run two copies here (not enough free memory), so the bot stands in
 The game copy is started with lab/launch.py if none is running, and closed at the end unless --keep.
 """
 import json
+import math
 import os
 import socket
 import subprocess
@@ -205,9 +206,34 @@ def run_a():
               f"menu open: move/look ignored {gm['move_ignored']}/{gm['look_ignored']}, W and mouse swallowed, Escape and key releases "
               f"pass; after the unpause input is back: {gm2 and not gm2['move_ignored']}")
 
-        gk = wait(lambda: game("markers"), lambda s: any(k != "1" and v.startswith("radar") for k, v in s["drawn"].items())
+        gk = wait(lambda: game("markers all"), lambda s: any(k != "1" and v.startswith("radar") for k, v in s["drawn"].items())
                   and "1" in s["drawn"], 5, "player markers")
         check("A_player_marker", gk, f"the bot guest is drawn on screen and on the radar: {gk and gk['drawn']}")
+
+        # 0.4.1: thugs fight the guest too. A thug next to the bot's puppet, with the host 10 m off, takes the puppet
+        # as its target and swings at it; each swing goes to the guest. The puppet takes no damage on the host.
+        # The bot stands 2 m from the nearest thug (a moved thug walks back to its post); the host stays 8 m off.
+        spot = game("thugspot")
+        tp_ = spot["pos"]
+        bot(f"stand {tp_[0] + 200:.0f} {tp_[1]:.0f} {tp_[2]:.0f}")
+        pup = wait(lambda: game("state"), lambda s: s["puppets"] and math.dist(s["puppets"][0]["pos"][:2], tp_[:2]) < 400, 10, "puppet by the thug")
+        pup = pup and pup["puppets"]
+        if pup:
+            pp = pup[0]["pos"]
+            game(f"tp {pp[0] + 800:.0f} {pp[1]:.0f} {pp[2] + 20:.0f}")
+            time.sleep(0.5)
+            th = game("thugfight")
+            gt = wait(lambda: game("thugs"), lambda s: s["attacks_sent"] >= 1, 30, "a thug attack on the guest's puppet")
+            t = game("thugs")
+            hooks = game("hooks")
+            check("A_thug_targets_guest", gt,
+                  f"thug {str(th.get('key')).split('.')[-1]} ({th.get('controller')}): retargets {t['retargets']}, "
+                  f"attacks sent to the guest {t['attacks_sent']}, thugs on guests {t['fighting_guests']}, error '{t['error']}'; "
+                  f"puppet damage calls {hooks.get('calls', {}).get('TakeDamagePlayer', 0)}")
+            log("thugfight " + json.dumps(th) + " near " + json.dumps(t.get("near")))
+            game(f"tp {home[0]} {home[1]} {home[2]}")
+        else:
+            check("A_thug_targets_guest", False, "no puppet for the bot")
 
         dump = game("npcdump 14")["npcs"]
         path = os.path.join(OUT, "npcs.json")
@@ -284,6 +310,24 @@ def run_b(npcs_path, skip_travel):
         hits = wait(lambda: bot("hits"), lambda s: len(s["hits"]) > 0, 10, "hit at bot host")
         check("B_game_hit_forwarded", gh.get("forwarded_to_host") and hits,
               f"the real guest's hit on {gh.get('target', '?').split(':')[-1]} went to the host instead of applying locally: {hits and hits['hits']}")
+
+        # 0.4.1: the host's thug swings at us: our copy of it plays a real thug attack on us (counter window), and
+        # an attack we do not counter hurts us.
+        gn3 = game("npcs")
+        cand = [m for m in gn3["mirror_list"] if m["bound"] and not m["local_down"] and "Villain" in m["local_class"]]
+        if cand:
+            hp0 = game("insp pawn.Health 0").get("value")
+            ba = bot(f"npc_attack {cand[0]['key']}")
+            gt = wait(lambda: game("thugs"), lambda s: s["attacks_played"] >= 1 and s["open"] == 0, 8, "attack played in game")
+            time.sleep(0.5)
+            hp1 = game("insp pawn.Health 0").get("value")
+            t = game("thugs")
+            check("B_thug_attack_on_guest", gt and t["hits_applied"] + t["countered"] >= 1 and isinstance(hp0, (int, float)) and hp1 < hp0,
+                  f"the bot host's {cand[0]['key'].split('.')[-1]} attacked ({ba.get('ok')}): received {t['attacks_received']}, played "
+                  f"{t['attacks_played']}, real thug attack {t['forced']}, landed {t['hits_applied']} (taken {t['hits_taken']}), countered "
+                  f"{t['countered']}; health {hp0} -> {hp1}; error '{t['error']}'")
+        else:
+            check("B_thug_attack_on_guest", False, f"no bound thug copy: {[m['local_class'] for m in gn3['mirror_list']]}")
 
         skips0 = game("vote")["skips_done"]
         game("watch on")

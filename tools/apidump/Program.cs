@@ -13,6 +13,22 @@ const BindingFlags F = BindingFlags.Public | BindingFlags.Instance | BindingFlag
 string N(Type t) => t.IsGenericType ? t.Name.Split('`')[0] + "<" + string.Join(",", t.GetGenericArguments().Select(N)) + ">" : t.Name;
 foreach (var q in args.Skip(1))
 {
+    if (q.StartsWith('~'))   // ~regex: every method or field whose name matches, on any type
+    {
+        var rx = new System.Text.RegularExpressions.Regex(q[1..], System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        foreach (var t in types.OrderBy(t => t.Name))
+        {
+            try
+            {
+                foreach (var m in t.GetMethods(F).Where(m => !m.IsSpecialName && rx.IsMatch(m.Name)))
+                    Console.WriteLine($"{t.Name}.{m.Name}({string.Join(", ", m.GetParameters().Select(p => N(p.ParameterType) + " " + p.Name))}) : {N(m.ReturnType)}");
+                foreach (var f in t.GetProperties(F).Where(f => rx.IsMatch(f.Name)))
+                    Console.WriteLine($"{t.Name}.{f.Name} : {N(f.PropertyType)} (prop)");
+            }
+            catch { }
+        }
+        continue;
+    }
     if (q.EndsWith('*'))
     {
         foreach (var t in types.Where(t => t.Name.StartsWith(q.TrimEnd('*'))).OrderBy(t => t.Name)) Console.WriteLine($"{t.FullName} : {t.BaseType?.Name}");
